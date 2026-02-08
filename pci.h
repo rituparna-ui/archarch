@@ -42,6 +42,8 @@
 #define VIRTIO_PCI_DEVICE_RNG_MODERN       0x1044
 #define VIRTIO_PCI_DEVICE_BLK_TRANSITIONAL 0x1001
 #define VIRTIO_PCI_DEVICE_BLK_MODERN       0x1042
+#define VIRTIO_PCI_DEVICE_NET_TRANSITIONAL 0x1000
+#define VIRTIO_PCI_DEVICE_NET_MODERN       0x1041
 
 /* PCI capability IDs */
 #define PCI_CAP_ID_VENDOR   0x09
@@ -74,6 +76,7 @@ void     pci_config_write16(uint8_t bus, uint8_t dev, uint8_t func, uint16_t off
 
 int  pci_find_virtio_rng(struct pci_device *out);
 int  pci_find_virtio_blk(struct pci_device *out);
+int  pci_find_virtio_net(struct pci_device *out);
 void pci_enable_device(struct pci_device *dev);
 void pci_enumerate(void);
 

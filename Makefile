@@ -7,7 +7,7 @@ OBJCOPY = $(CROSS)objcopy
 CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -mcpu=cortex-a53
 LDFLAGS = -nostdlib -T linker.ld
 
-OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o
+OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o virtio_net.o
 
 all: kernel.elf kernel.bin
 
@@ -26,7 +26,7 @@ start.o: start.S
 clean:
 	rm -f *.o kernel.elf kernel.bin
 
-run: kernel.elf
+run: kernel.elf disk.img
 	qemu-system-aarch64 \
 		-machine virt \
 		-cpu cortex-a53 \
@@ -35,6 +35,8 @@ run: kernel.elf
 		-device virtio-rng-pci \
 		-drive file=disk.img,if=none,format=raw,id=hd0 \
 		-device virtio-blk-pci,drive=hd0 \
+		-netdev user,id=net0 \
+		-device virtio-net-pci,netdev=net0 \
 		-kernel kernel.elf
 
 disk.img:

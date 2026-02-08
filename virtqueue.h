@@ -41,7 +41,7 @@ struct vring_used {
  * Max queue size we support. Each virtqueue instance gets its own
  * statically-allocated ring memory via virtqueue_alloc().
  */
-#define VIRTQ_MAX_SIZE 32
+#define VIRTQ_MAX_SIZE 256
 
 struct virtqueue {
     struct vring_desc  *desc;
@@ -60,7 +60,7 @@ struct virtqueue {
  * Allocate ring memory for a virtqueue and initialize it.
  * Supports up to VIRTQ_MAX_QUEUES concurrent queues.
  */
-#define VIRTQ_MAX_QUEUES 4
+#define VIRTQ_MAX_QUEUES 8
 void virtqueue_init(struct virtqueue *vq, uint16_t num,
                     uint16_t queue_index, uintptr_t notify_addr);
 
