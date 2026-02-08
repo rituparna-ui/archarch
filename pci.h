@@ -92,6 +92,7 @@ int  pci_find_virtio_rng(struct pci_device *out);
 int  pci_find_virtio_blk(struct pci_device *out);
 int  pci_find_virtio_net(struct pci_device *out);
 int  pci_find_virtio_gpu(struct pci_device *out);
+void pci_assign_bars(struct pci_device *dev);
 void pci_enable_device(struct pci_device *dev);
 void pci_enumerate(void);
 

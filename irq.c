@@ -24,6 +24,7 @@ volatile int irq_rng_pending;
 volatile int irq_blk_pending;
 volatile int irq_net_rx_pending;
 volatile int irq_gpu_pending;
+volatile int irq_input_pending;
 
 /* Dispatch table entry */
 struct irq_dev_entry {
@@ -42,6 +43,7 @@ void irq_init(void) {
     irq_blk_pending = 0;
     irq_net_rx_pending = 0;
     irq_gpu_pending = 0;
+    irq_input_pending = 0;
     irq_dev_count = 0;
     for (int i = 0; i < MAX_IRQ_DEVS; i++)
         irq_devs[i].active = 0;
@@ -84,6 +86,10 @@ void irq_register_net(struct virtio_pci_dev *vpci, uint32_t irq_id) {
 
 void irq_register_gpu(struct virtio_pci_dev *vpci, uint32_t irq_id) {
     register_dev(vpci, &irq_gpu_pending, irq_id);
+}
+
+void irq_register_input(struct virtio_pci_dev *vpci, uint32_t irq_id) {
+    register_dev(vpci, &irq_input_pending, irq_id);
 }
 
 /*

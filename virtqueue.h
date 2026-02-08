@@ -60,7 +60,7 @@ struct virtqueue {
  * Allocate ring memory for a virtqueue and initialize it.
  * Supports up to VIRTQ_MAX_QUEUES concurrent queues.
  */
-#define VIRTQ_MAX_QUEUES 8
+#define VIRTQ_MAX_QUEUES 16
 void virtqueue_init(struct virtqueue *vq, uint16_t num,
                     uint16_t queue_index, uintptr_t notify_addr);
 

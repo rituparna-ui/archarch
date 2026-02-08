@@ -20,6 +20,7 @@
 #include "virtio_blk.h"
 #include "virtio_net.h"
 #include "virtio_gpu.h"
+#include "virtio_input.h"
 
 static struct virtio_rng rng_dev;
 static struct virtio_blk blk_dev;
@@ -477,13 +478,145 @@ static void demo_gpu(void) {
     uart_puts("[GPU] or use QEMU monitor 'screendump /tmp/frame.ppm'\n\n");
 }
 
+/* ---- Demo: virtio-input (keyboard + mouse from VNC) ---- */
+static void demo_input(void) {
+    uart_puts("--- virtio-input demo (keyboard/mouse) ---\n");
+    int count = virtio_input_init_all();
+    if (count == 0) {
+        uart_puts("SKIP: no virtio-input devices found\n\n");
+        return;
+    }
+
+    /* Register all input devices for interrupts */
+    for (int i = 0; i < count; i++) {
+        struct virtio_input *dev = virtio_input_get_dev(i);
+        uint32_t irq = pci_get_irq(&dev->pci);
+        if (irq)
+            irq_register_input(&dev->vpci, irq);
+    }
+
+    uart_puts("[INPUT] Listening for events...\n");
+    uart_puts("[INPUT] Use QEMU monitor to send keys:\n");
+    uart_puts("[INPUT]   telnet 127.0.0.1 4444\n");
+    uart_puts("[INPUT]   sendkey a\n");
+    uart_puts("[INPUT]   sendkey ret\n");
+    uart_puts("[INPUT] Press ESC (sendkey esc) to end demo.\n\n");
+
+    int done = 0;
+    int evt_count = 0;
+    uint64_t loop_count = 0;
+    struct virtio_input_event evt;
+
+    while (!done) {
+        loop_count++;
+
+        /* Periodic heartbeat every ~10M iterations */
+        if ((loop_count % 10000000) == 0) {
+            uart_puts("[INPUT] heartbeat, loops=");
+            uart_putdec(loop_count);
+            uart_puts(" events=");
+            uart_putdec((uint64_t)evt_count);
+            /* Dump used ring index for keyboard eventq */
+            struct virtio_input *kbd = virtio_input_get_dev(0);
+            if (kbd) {
+                uart_puts(" kbd_used_idx=");
+                uart_putdec(kbd->evtq.used->idx);
+                uart_puts("/");
+                uart_putdec(kbd->evtq.last_used_idx);
+            }
+            uart_puts("\n");
+        }
+
+        if (virtio_input_poll(&evt)) {
+            /* Filter out EV_SYN noise */
+            if (evt.type == EV_SYN) {
+                /* Still count SYN to prove events are arriving */
+                evt_count++;
+                continue;
+            }
+
+            evt_count++;
+
+            if (evt.type == EV_KEY) {
+                const char *name = key_name(evt.code);
+                if (evt.value == 1) {
+                    uart_puts("[KEY] DOWN: ");
+                    uart_puts(name);
+                    uart_puts(" (code=");
+                    uart_putdec(evt.code);
+                    uart_puts(")\n");
+                } else if (evt.value == 0) {
+                    uart_puts("[KEY] UP:   ");
+                    uart_puts(name);
+                    uart_puts("\n");
+                }
+
+                /* ESC key release ends the demo */
+                if (evt.code == KEY_ESC && evt.value == 0)
+                    done = 1;
+
+            } else if (evt.type == EV_REL) {
+                if (evt.code == REL_X) {
+                    uart_puts("[MOUSE] REL_X: ");
+                    if (evt.value & 0x80000000) {
+                        uart_puts("-");
+                        uart_putdec((uint64_t)(-(int64_t)(int32_t)evt.value));
+                    } else {
+                        uart_putdec(evt.value);
+                    }
+                    uart_puts("\n");
+                } else if (evt.code == REL_Y) {
+                    uart_puts("[MOUSE] REL_Y: ");
+                    if (evt.value & 0x80000000) {
+                        uart_puts("-");
+                        uart_putdec((uint64_t)(-(int64_t)(int32_t)evt.value));
+                    } else {
+                        uart_putdec(evt.value);
+                    }
+                    uart_puts("\n");
+                } else if (evt.code == REL_WHEEL) {
+                    uart_puts("[MOUSE] WHEEL: ");
+                    uart_putdec(evt.value);
+                    uart_puts("\n");
+                }
+
+            } else if (evt.type == EV_ABS) {
+                if (evt.code == ABS_X) {
+                    uart_puts("[TABLET] ABS_X: ");
+                    uart_putdec(evt.value);
+                    uart_puts("\n");
+                } else if (evt.code == ABS_Y) {
+                    uart_puts("[TABLET] ABS_Y: ");
+                    uart_putdec(evt.value);
+                    uart_puts("\n");
+                }
+
+            } else {
+                uart_puts("[INPUT] type=");
+                uart_putdec(evt.type);
+                uart_puts(" code=");
+                uart_putdec(evt.code);
+                uart_puts(" value=");
+                uart_putdec(evt.value);
+                uart_puts("\n");
+            }
+        } else {
+            /* No event — busy poll */
+        }
+    }
+
+    uart_puts("\n[INPUT] Demo ended. Received ");
+    uart_putdec((uint64_t)evt_count);
+    uart_puts(" events.\n\n");
+}
+
 void main(void) {
     uart_init();
     uart_puts("\n==========================================\n");
     uart_puts("  AArch64 Bare Metal Virtio Demo\n");
     uart_puts("  PCI ECAM / Virtio 1.x / Split VQ\n");
     uart_puts("  GICv3 Interrupts / WFI\n");
-    uart_puts("  Devices: RNG + Block + Network + GPU\n");
+    uart_puts("  Devices: RNG + Block + Network + GPU + Input\n");
     uart_puts("==========================================\n\n");
 
     /* Initialize GICv3 and interrupt dispatch */
@@ -501,6 +634,7 @@ void main(void) {
     demo_blk();
     demo_net();
     demo_gpu();
+    demo_input();
 
     /* Disable IRQs before halting */
     irq_disable();

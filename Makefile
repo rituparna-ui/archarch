@@ -7,7 +7,7 @@ OBJCOPY = $(CROSS)objcopy
 CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -mcpu=cortex-a53
 LDFLAGS = -nostdlib -T linker.ld
 
-OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o virtio_net.o virtio_gpu.o gic.o irq.o
+OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o virtio_net.o virtio_gpu.o virtio_input.o gic.o irq.o
 
 all: kernel.elf kernel.bin
 
@@ -39,6 +39,8 @@ run: kernel.elf disk.img
 		-netdev user,id=net0 \
 		-device virtio-net-pci,netdev=net0 \
 		-device virtio-gpu-pci \
+		-device virtio-keyboard-pci \
+		-device virtio-mouse-pci \
 		-vnc :0,password \
 		-monitor telnet:127.0.0.1:4444,server,nowait \
 		-kernel kernel.elf

@@ -44,7 +44,7 @@ static uintptr_t alloc_pio(uint32_t size) {
     return addr;
 }
 
-static void pci_assign_bars(struct pci_device *dev) {
+void pci_assign_bars(struct pci_device *dev) {
     uint8_t bus = dev->bus, d = dev->dev, func = dev->func;
 
     for (int i = 0; i < 6; i++) {
