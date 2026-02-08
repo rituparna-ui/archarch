@@ -7,7 +7,7 @@ OBJCOPY = $(CROSS)objcopy
 CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -mcpu=cortex-a53
 LDFLAGS = -nostdlib -T linker.ld
 
-OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o virtio_net.o virtio_gpu.o virtio_input.o gic.o irq.o
+OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o virtio_net.o virtio_gpu.o virtio_input.o gic.o irq.o timer.o sched.o context_switch.o
 
 all: kernel.elf kernel.bin
 
@@ -18,6 +18,9 @@ kernel.bin: kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
 start.o: start.S
+	$(AS) -o $@ $<
+
+context_switch.o: context_switch.S
 	$(AS) -o $@ $<
 
 %.o: %.c

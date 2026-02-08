@@ -17,6 +17,8 @@
 #include "gic.h"
 #include "virtio_pci.h"
 #include "pci.h"
+#include "timer.h"
+#include "sched.h"
 #include "uart.h"
 
 /* Interrupt pending flags — set by ISR, cleared by main loop */
@@ -25,6 +27,9 @@ volatile int irq_blk_pending;
 volatile int irq_net_rx_pending;
 volatile int irq_gpu_pending;
 volatile int irq_input_pending;
+volatile uint64_t irq_timer_ticks;
+
+static int timer_registered;
 
 /* Dispatch table entry */
 struct irq_dev_entry {
@@ -44,6 +49,8 @@ void irq_init(void) {
     irq_net_rx_pending = 0;
     irq_gpu_pending = 0;
     irq_input_pending = 0;
+    irq_timer_ticks = 0;
+    timer_registered = 0;
     irq_dev_count = 0;
     for (int i = 0; i < MAX_IRQ_DEVS; i++)
         irq_devs[i].active = 0;
@@ -92,6 +99,13 @@ void irq_register_input(struct virtio_pci_dev *vpci, uint32_t irq_id) {
     register_dev(vpci, &irq_input_pending, irq_id);
 }
 
+void irq_register_timer(void) {
+    timer_registered = 1;
+    uart_puts("[IRQ] Timer registered on IRQ ");
+    uart_putdec(TIMER_IRQ_ID);
+    uart_puts("\n");
+}
+
 /*
  * Main IRQ handler — called from the assembly exception vector.
  *
@@ -105,6 +119,29 @@ void irq_handler(void) {
     /* Spurious interrupt check (ID 1023) */
     if (iar >= 1020)
         return;
+
+    /* Timer interrupt (PPI 14 = IRQ 30) */
+    if (iar == TIMER_IRQ_ID && timer_registered) {
+        irq_timer_ticks++;
+        /*
+         * IMPORTANT: rearm BEFORE EOI!
+         * The physical timer PPI is level-triggered. If we EOI while
+         * ISTATUS is still set (TVAL <= 0), the GIC will immediately
+         * re-pend the interrupt, causing an IRQ storm.
+         * Rearming sets a new TVAL, which clears ISTATUS.
+         */
+        timer_rearm();
+        gic_eoi(iar);
+        sched_tick();
+        return;
+    }
+
+    /* Debug: print unexpected IRQ IDs to catch timer issues */
+    if (iar == TIMER_IRQ_ID && !timer_registered) {
+        /* Timer fired but not registered yet — just ack and ignore */
+        gic_eoi(iar);
+        return;
+    }
 
     /* Walk registered devices and check which ones share this IRQ */
     for (int i = 0; i < irq_dev_count; i++) {

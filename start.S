@@ -1,21 +1,98 @@
 /*
- * AArch64 startup code with GICv3 exception vector table.
+ * AArch64 startup code.
  *
- * Vector table layout (ARMv8-A):
- *   4 groups × 4 entries × 128 bytes = 2048 bytes
- *   Group 0: Current EL with SP0
- *   Group 1: Current EL with SPx  <-- we use this
- *   Group 2: Lower EL using AArch64
- *   Group 3: Lower EL using AArch32
+ * Boot sequence:
+ *   1. Detect current EL (could be EL3, EL2, or EL1)
+ *   2. If EL3: configure SCR_EL3, drop to EL2
+ *   3. If EL2: configure HCR_EL2, CNTHCTL_EL2, ICC_SRE_EL2, drop to EL1
+ *   4. At EL1: zero BSS, set stack, install vectors, call main()
  *
- * Each entry is 128 bytes (32 instructions max).
- * We only handle IRQ from current EL with SPx.
+ * This ensures the physical timer, GICv3, and all EL1 features
+ * work correctly regardless of which EL QEMU boots us at.
  */
 
 .section .text.boot
 .global _start
 
 _start:
+    /* Check current exception level */
+    mrs     x0, CurrentEL
+    lsr     x0, x0, #2         /* x0 = current EL (0-3) */
+
+    cmp     x0, #3
+    b.eq    at_el3
+    cmp     x0, #2
+    b.eq    at_el2
+    b       at_el1              /* Already at EL1 */
+
+/*
+ * ---- EL3 -> EL2 transition ----
+ * Configure Secure Configuration Register to allow NS EL2/EL1.
+ */
+at_el3:
+    /* SCR_EL3: NS=1, HCE=1, SMD=1, RW=1 (AArch64 at EL2) */
+    mov     x0, #0x5b1
+    msr     scr_el3, x0
+
+    /* SCTLR_EL2: safe reset value */
+    mrs     x0, sctlr_el2
+    msr     sctlr_el2, x0
+
+    /* Set return address and SPSR for EL2h */
+    adr     x0, at_el2
+    msr     elr_el3, x0
+    mov     x0, #0x3c9         /* SPSR: EL2h, DAIF masked */
+    msr     spsr_el3, x0
+    eret
+
+/*
+ * ---- EL2 -> EL1 transition ----
+ * Configure:
+ *   - HCR_EL2: RW=1 (AArch64 at EL1), no VM/trapping
+ *   - CNTHCTL_EL2: enable physical timer/counter access from EL1
+ *   - ICC_SRE_EL2: enable GICv3 system register access from EL1
+ *   - VBAR_EL2: point to a safe vector (spin)
+ */
+at_el2:
+    /* HCR_EL2: RW=1 (bit 31) — EL1 is AArch64. No other traps. */
+    mov     x0, #(1 << 31)
+    msr     hcr_el2, x0
+
+    /*
+     * CNTHCTL_EL2: EL1PCTEN=1 (bit 0), EL1PCEN=1 (bit 1)
+     * Allow EL1/EL0 access to physical counter and physical timer.
+     */
+    mov     x0, #3
+    msr     cnthctl_el2, x0
+
+    /* CNTVOFF_EL2 = 0: no virtual offset */
+    msr     cntvoff_el2, xzr
+
+    /* GICv3: enable system register interface at EL2 so EL1 can use it */
+    mrs     x0, S3_4_C12_C9_5  /* ICC_SRE_EL2 */
+    orr     x0, x0, #(1 << 0)  /* SRE = 1 */
+    orr     x0, x0, #(1 << 3)  /* Enable = 1 (allow EL1 access) */
+    msr     S3_4_C12_C9_5, x0
+    isb
+
+    /* SCTLR_EL1: RES1 bits, caches/MMU off */
+    mrs     x0, sctlr_el1
+    msr     sctlr_el1, x0
+
+    /* SPSR_EL2: return to EL1h with DAIF masked */
+    mov     x0, #0x3c5         /* EL1h = 0b00101, DAIF = 0b1111 << 6 */
+    msr     spsr_el2, x0
+
+    /* ELR_EL2: return address = at_el1 */
+    adr     x0, at_el1
+    msr     elr_el2, x0
+    eret
+
+/*
+ * ---- Running at EL1 ----
+ * Standard init: stack, BSS, vectors, call main.
+ */
+at_el1:
     /* Set up stack pointer */
     ldr     x0, =__stack_top
     mov     sp, x0
@@ -109,12 +186,11 @@ vectors:
 
 /*
  * IRQ entry point.
- * Save caller-saved registers + ELR_EL1 + SPSR_EL1,
+ * Save all registers + ELR_EL1 + SPSR_EL1,
  * call C handler, restore, eret.
  */
 .section .text
 irq_entry:
-    /* Save x0-x30, ELR, SPSR on stack (34 * 8 = 272 bytes, 16-aligned = 272) */
     sub     sp, sp, #272
 
     stp     x0,  x1,  [sp, #0]
@@ -138,10 +214,8 @@ irq_entry:
     mrs     x1, spsr_el1
     stp     x0, x1, [sp, #248]
 
-    /* Call C handler */
     bl      irq_handler
 
-    /* Restore ELR, SPSR */
     ldp     x0, x1, [sp, #248]
     msr     elr_el1, x0
     msr     spsr_el1, x1
@@ -166,10 +240,6 @@ irq_entry:
     add     sp, sp, #272
     eret
 
-/*
- * Unhandled exception — just spin.
- * In a real system you'd dump registers and halt.
- */
 unhandled_exception:
     wfe
     b       unhandled_exception

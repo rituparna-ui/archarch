@@ -21,6 +21,8 @@
 #include "virtio_net.h"
 #include "virtio_gpu.h"
 #include "virtio_input.h"
+#include "timer.h"
+#include "sched.h"
 
 static struct virtio_rng rng_dev;
 static struct virtio_blk blk_dev;
@@ -505,9 +507,10 @@ static void demo_input(void) {
     int done = 0;
     int evt_count = 0;
     uint64_t loop_count = 0;
+    uint64_t max_loops = 50000000; /* Auto-exit after ~5s if no ESC */
     struct virtio_input_event evt;
 
-    while (!done) {
+    while (!done && loop_count < max_loops) {
         loop_count++;
 
         /* Periodic heartbeat every ~10M iterations */
@@ -610,6 +613,142 @@ static void demo_input(void) {
     uart_puts(" events.\n\n");
 }
 
+/* ---- Demo: Timer + Preemptive Scheduler ---- */
+
+/*
+ * Three demo tasks that run concurrently, preempted by the timer.
+ * Each task does some "work" (busy loop + prints), then finishes.
+ * The scheduler round-robins between them on every timer tick.
+ */
+
+static void task_counter(void *arg) {
+    const char *label = (const char *)arg;
+    for (int i = 1; i <= 5; i++) {
+        uart_puts("  [");
+        uart_puts(label);
+        uart_puts("] count=");
+        uart_putdec((uint64_t)i);
+        uart_puts(" (task ");
+        uart_putdec((uint64_t)sched_current_id());
+        uart_puts(", t=");
+        uart_putdec(timer_ms());
+        uart_puts("ms)\n");
+
+        /* Busy work — will get preempted by timer */
+        for (volatile uint64_t d = 0; d < 20000000; d++)
+            ;
+    }
+}
+
+static void task_fibonacci(void *arg) {
+    (void)arg;
+    uint64_t a = 0, b = 1;
+    for (int i = 0; i < 10; i++) {
+        uart_puts("  [FIB] fib(");
+        uart_putdec((uint64_t)i);
+        uart_puts(")=");
+        uart_putdec(a);
+        uart_puts(" (task ");
+        uart_putdec((uint64_t)sched_current_id());
+        uart_puts(", t=");
+        uart_putdec(timer_ms());
+        uart_puts("ms)\n");
+
+        uint64_t next = a + b;
+        a = b;
+        b = next;
+
+        /* Busy work */
+        for (volatile uint64_t d = 0; d < 15000000; d++)
+            ;
+    }
+}
+
+static void task_dots(void *arg) {
+    (void)arg;
+    for (int i = 0; i < 20; i++) {
+        uart_puts("  [DOTS] ");
+        for (int j = 0; j <= i % 10; j++)
+            uart_putc('.');
+        uart_puts(" (task ");
+        uart_putdec((uint64_t)sched_current_id());
+        uart_puts(", t=");
+        uart_putdec(timer_ms());
+        uart_puts("ms)\n");
+
+        /* Busy work */
+        for (volatile uint64_t d = 0; d < 10000000; d++)
+            ;
+    }
+}
+
+static void demo_sched(void) {
+    uart_puts("--- timer + scheduler demo (preemptive round-robin) ---\n");
+
+    /* Initialize timer: 10ms tick */
+    timer_init(10);
+    irq_register_timer();
+
+    /* Initialize scheduler (current context becomes idle task) */
+    sched_init();
+
+    /* Create worker tasks */
+    sched_create("counter-A", task_counter, (void *)"A");
+    sched_create("counter-B", task_counter, (void *)"B");
+    sched_create("fibonacci", task_fibonacci, NULL);
+    sched_create("dots",      task_dots,      NULL);
+
+    uart_puts("\n[SCHED] Starting tasks...\n\n");
+
+    /*
+     * Idle loop: yield to worker tasks.
+     * When all workers finish, pick_next returns idle (us),
+     * and we break out.
+     */
+    int alive;
+    do {
+        sched_yield();
+
+        /* Check if any non-idle tasks are still running */
+        alive = 0;
+        for (int i = 1; i < sched_task_count(); i++) {
+            struct task *t = sched_get_task(i);
+            if (t && (t->state == TASK_READY || t->state == TASK_RUNNING))
+                alive = 1;
+        }
+    } while (alive);
+
+    /* Stop the timer */
+    timer_disable();
+
+    uart_puts("\n[SCHED] All tasks finished!\n");
+    uart_puts("[SCHED] Timer ticks: ");
+    uart_putdec(irq_timer_ticks);
+    uart_puts(", elapsed: ");
+    uart_putdec(timer_ms());
+    uart_puts("ms\n");
+
+    /* Print per-task stats */
+    uart_puts("[SCHED] Task stats:\n");
+    for (int i = 0; i < sched_task_count(); i++) {
+        struct task *t = sched_get_task(i);
+        if (!t) continue;
+        uart_puts("  task ");
+        uart_putdec((uint64_t)i);
+        uart_puts(" \"");
+        uart_puts(t->name);
+        uart_puts("\": ");
+        uart_putdec(t->ticks);
+        uart_puts(" ticks, state=");
+        if (t->state == TASK_FINISHED) uart_puts("finished");
+        else if (t->state == TASK_READY) uart_puts("ready");
+        else if (t->state == TASK_RUNNING) uart_puts("running");
+        else uart_puts("?");
+        uart_puts("\n");
+    }
+    uart_puts("\n");
+}
+
 void main(void) {
     uart_init();
     uart_puts("\n==========================================\n");
@@ -617,6 +756,7 @@ void main(void) {
     uart_puts("  PCI ECAM / Virtio 1.x / Split VQ\n");
     uart_puts("  GICv3 Interrupts / WFI\n");
     uart_puts("  Devices: RNG + Block + Network + GPU + Input\n");
+    uart_puts("  Timer + Preemptive Scheduler\n");
     uart_puts("==========================================\n\n");
 
     /* Initialize GICv3 and interrupt dispatch */
@@ -630,11 +770,12 @@ void main(void) {
     pci_enumerate();
     uart_puts("\n");
 
-    demo_rng();
-    demo_blk();
-    demo_net();
-    demo_gpu();
-    demo_input();
+    // demo_rng();
+    // demo_blk();
+    // demo_net();
+    // demo_gpu();
+    // demo_input();
+    demo_sched();
 
     /* Disable IRQs before halting */
     irq_disable();

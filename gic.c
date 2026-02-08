@@ -63,7 +63,7 @@ static inline uint64_t icc_iar1_el1_read(void) {
 }
 
 static inline void icc_eoir1_el1_write(uint64_t val) {
-    __asm__ volatile("msr S3_0_C12_C11_1, %0" :: "r"(val)); /* ICC_EOIR1_EL1 */
+    __asm__ volatile("msr S3_0_C12_C12_1, %0" :: "r"(val)); /* ICC_EOIR1_EL1 */
     isb();
 }
 

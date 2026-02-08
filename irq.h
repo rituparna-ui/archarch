@@ -18,6 +18,7 @@ extern volatile int irq_blk_pending;
 extern volatile int irq_net_rx_pending;
 extern volatile int irq_gpu_pending;
 extern volatile int irq_input_pending;
+extern volatile uint64_t irq_timer_ticks;
 
 /* Called from assembly vector */
 void irq_handler(void);
@@ -30,6 +31,9 @@ void irq_register_blk(struct virtio_pci_dev *vpci, uint32_t irq_id);
 void irq_register_net(struct virtio_pci_dev *vpci, uint32_t irq_id);
 void irq_register_gpu(struct virtio_pci_dev *vpci, uint32_t irq_id);
 void irq_register_input(struct virtio_pci_dev *vpci, uint32_t irq_id);
+
+/* Register the timer for interrupt dispatch */
+void irq_register_timer(void);
 
 /* Initialize interrupt dispatch (call after gic_init) */
 void irq_init(void);
