@@ -70,4 +70,27 @@ struct virtio_pci_dev {
     uintptr_t device_cfg;       /* MMIO address of device-specific config */
 };
 
+/* Forward declarations */
+struct pci_device;
+struct virtqueue;
+
+/* Parse PCI capability list to find virtio config regions */
+int virtio_pci_parse_caps(struct pci_device *pci, struct virtio_pci_dev *vpci);
+
+/*
+ * Run virtio init steps 1-5 (reset through FEATURES_OK).
+ * accepted_features_lo: device-specific feature bits to accept (low 32).
+ * required_features_hi_mask: additional high feature bits beyond VERSION_1.
+ */
+int virtio_pci_init_device(struct pci_device *pci, struct virtio_pci_dev *vpci,
+                           uint32_t accepted_features_lo,
+                           uint32_t required_features_hi_mask);
+
+/* Setup a single virtqueue (step 6 helper) */
+int virtio_pci_setup_queue(struct virtio_pci_dev *vpci, struct virtqueue *vq,
+                           uint16_t queue_index, uint16_t desired_size);
+
+/* Set DRIVER_OK (step 7) */
+void virtio_pci_set_driver_ok(struct virtio_pci_dev *vpci);
+
 #endif

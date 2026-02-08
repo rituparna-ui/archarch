@@ -24,7 +24,6 @@ struct vring_avail {
     uint16_t flags;
     uint16_t idx;
     uint16_t ring[];
-    /* followed by uint16_t used_event if VIRTIO_F_EVENT_IDX */
 } __attribute__((packed));
 
 struct vring_used_elem {
@@ -36,47 +35,64 @@ struct vring_used {
     uint16_t flags;
     uint16_t idx;
     struct vring_used_elem ring[];
-    /* followed by uint16_t avail_event if VIRTIO_F_EVENT_IDX */
 } __attribute__((packed));
 
-#define VIRTQ_SIZE 16  /* small queue for RNG */
+/*
+ * Max queue size we support. Each virtqueue instance gets its own
+ * statically-allocated ring memory via virtqueue_alloc().
+ */
+#define VIRTQ_MAX_SIZE 32
 
 struct virtqueue {
-    /* Descriptor table */
     struct vring_desc  *desc;
-    /* Available ring */
     struct vring_avail *avail;
-    /* Used ring */
     struct vring_used  *used;
 
-    uint16_t num;           /* queue size */
-    uint16_t free_head;     /* head of free descriptor list */
-    uint16_t last_used_idx; /* last seen used index */
-    uint16_t avail_idx;     /* next avail index to write */
-
-    /* Notify address for this queue */
+    uint16_t num;
+    uint16_t free_head;
+    uint16_t last_used_idx;
+    uint16_t avail_idx;
+    uint16_t queue_index;     /* which queue on the device (for kick) */
     uintptr_t notify_addr;
 };
 
 /*
- * Allocate and initialize a virtqueue.
- * Returns the physical addresses for desc, avail, used tables.
+ * Allocate ring memory for a virtqueue and initialize it.
+ * Supports up to VIRTQ_MAX_QUEUES concurrent queues.
  */
-void virtqueue_init(struct virtqueue *vq, uint16_t num, uintptr_t notify_addr);
+#define VIRTQ_MAX_QUEUES 4
+void virtqueue_init(struct virtqueue *vq, uint16_t num,
+                    uint16_t queue_index, uintptr_t notify_addr);
 
 /*
- * Add a single device-writable buffer to the queue.
- * Returns the descriptor index used.
+ * Descriptor for building chains.
+ */
+struct vq_buf {
+    void     *addr;
+    uint32_t  len;
+    uint16_t  flags;  /* 0 = device-readable, VRING_DESC_F_WRITE = device-writable */
+};
+
+/*
+ * Add a chain of buffers to the queue.
+ * Returns the head descriptor index, or 0xFFFF on failure.
+ */
+uint16_t virtqueue_add_chain(struct virtqueue *vq,
+                             struct vq_buf *bufs, int count);
+
+/*
+ * Convenience: add a single device-writable buffer (for RNG etc).
  */
 uint16_t virtqueue_add_buf_write(struct virtqueue *vq, void *buf, uint32_t len);
 
 /*
- * Kick the device (write to notify register).
+ * Kick the device.
  */
 void virtqueue_kick(struct virtqueue *vq);
 
 /*
- * Check if there's a used buffer. If so, return 1 and fill *len with bytes written.
+ * Poll for a used buffer. Returns 1 if found, fills idx and len.
+ * Frees the entire descriptor chain back to the free list.
  */
 int virtqueue_get_used(struct virtqueue *vq, uint16_t *idx, uint32_t *len);
 

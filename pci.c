@@ -186,3 +186,30 @@ int pci_find_virtio_rng(struct pci_device *out) {
     }
     return 0;
 }
+int pci_find_virtio_blk(struct pci_device *out) {
+    for (uint8_t dev = 0; dev < 32; dev++) {
+        uint16_t vendor = pci_config_read16(0, dev, 0, PCI_VENDOR_ID);
+        if (vendor != VIRTIO_PCI_VENDOR)
+            continue;
+
+        uint16_t device = pci_config_read16(0, dev, 0, PCI_DEVICE_ID);
+        if (device != VIRTIO_PCI_DEVICE_BLK_TRANSITIONAL &&
+            device != VIRTIO_PCI_DEVICE_BLK_MODERN)
+            continue;
+
+        out->bus = 0;
+        out->dev = dev;
+        out->func = 0;
+        out->vendor_id = vendor;
+        out->device_id = device;
+
+        uart_puts("[PCI] Found virtio-blk at slot ");
+        uart_putdec(dev);
+        uart_puts("\n");
+
+        pci_assign_bars(out);
+        pci_enable_device(out);
+        return 1;
+    }
+    return 0;
+}

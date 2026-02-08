@@ -7,7 +7,7 @@ OBJCOPY = $(CROSS)objcopy
 CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -mcpu=cortex-a53
 LDFLAGS = -nostdlib -T linker.ld
 
-OBJS = start.o main.o uart.o pci.o virtio_rng.o virtqueue.o
+OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o
 
 all: kernel.elf kernel.bin
 
@@ -33,6 +33,11 @@ run: kernel.elf
 		-m 128M \
 		-nographic \
 		-device virtio-rng-pci \
+		-drive file=disk.img,if=none,format=raw,id=hd0 \
+		-device virtio-blk-pci,drive=hd0 \
 		-kernel kernel.elf
+
+disk.img:
+	dd if=/dev/zero of=disk.img bs=1M count=1
 
 .PHONY: all clean run
