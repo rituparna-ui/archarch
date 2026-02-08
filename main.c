@@ -19,10 +19,12 @@
 #include "virtio_rng.h"
 #include "virtio_blk.h"
 #include "virtio_net.h"
+#include "virtio_gpu.h"
 
 static struct virtio_rng rng_dev;
 static struct virtio_blk blk_dev;
 static struct virtio_net net_dev;
+static struct virtio_gpu gpu_dev;
 
 static uint8_t rng_buf[64] __attribute__((aligned(64)));
 static uint8_t blk_buf[512] __attribute__((aligned(512)));
@@ -370,13 +372,118 @@ static void demo_net(void) {
     uart_puts(" extra packets\n\n");
 }
 
+/* ---- Demo: virtio-gpu 2D rendering ---- */
+static void demo_gpu(void) {
+    uart_puts("--- virtio-gpu demo (2D framebuffer) ---\n");
+    if (virtio_gpu_init(&gpu_dev) < 0) {
+        uart_puts("SKIP: virtio-gpu not available\n\n");
+        return;
+    }
+
+    /* Register for interrupts */
+    uint32_t irq = pci_get_irq(&gpu_dev.pci);
+    if (irq)
+        irq_register_gpu(&gpu_dev.vpci, irq);
+
+    uint32_t *fb = virtio_gpu_get_framebuffer();
+    uint32_t w = gpu_dev.width;
+    uint32_t h = gpu_dev.height;
+
+    /*
+     * Draw a colorful test pattern:
+     *   - Red/green/blue/white quadrants
+     *   - Gradient bars within each quadrant
+     *   - A centered yellow rectangle
+     */
+    uart_puts("[GPU] Drawing test pattern...\n");
+
+    uint32_t hw = w / 2;
+    uint32_t hh = h / 2;
+
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            uint32_t pixel;
+            uint8_t intensity = (uint8_t)((x % hw) * 255 / hw);
+
+            if (y < hh) {
+                if (x < hw)
+                    pixel = 0xFF000000 | (uint32_t)intensity;          /* Red */
+                else
+                    pixel = 0xFF000000 | ((uint32_t)intensity << 8);   /* Green */
+            } else {
+                if (x < hw)
+                    pixel = 0xFF000000 | ((uint32_t)intensity << 16);  /* Blue */
+                else
+                    pixel = 0xFF000000 | (uint32_t)intensity |
+                            ((uint32_t)intensity << 8) |
+                            ((uint32_t)intensity << 16);               /* White */
+            }
+            fb[y * w + x] = pixel;
+        }
+    }
+
+    /* Draw a centered yellow rectangle (160x120) */
+    uint32_t rx = (w - 160) / 2;
+    uint32_t ry = (h - 120) / 2;
+    for (uint32_t y = ry; y < ry + 120; y++) {
+        for (uint32_t x = rx; x < rx + 160; x++) {
+            fb[y * w + x] = 0xFF00FFFF; /* Yellow in RGBA (R=0xFF, G=0xFF, B=0, A=0xFF) */
+        }
+    }
+
+    /* Flush entire framebuffer to display */
+    uart_puts("[GPU] Flushing to display...\n");
+    if (virtio_gpu_flush(&gpu_dev, 0, 0, w, h) == 0) {
+        uart_puts("[GPU] FLUSH OK — test pattern displayed!\n");
+        uart_puts("[GPU] Pattern: 4 quadrants (R/G/B/W gradients) + yellow center rect\n");
+    } else {
+        uart_puts("[GPU] FLUSH FAILED\n");
+    }
+
+    /*
+     * Draw a second frame: color bars.
+     * Delay ~2 seconds so the first frame is visible on VNC.
+     */
+    uart_puts("[GPU] Pausing 2s...\n");
+    for (volatile uint64_t d = 0; d < 600000000; d++)
+        ;
+
+    uart_puts("[GPU] Drawing color bars...\n");
+    uint32_t colors[] = {
+        0xFF0000FF, /* Red */
+        0xFF00FF00, /* Green */
+        0xFFFF0000, /* Blue */
+        0xFF00FFFF, /* Yellow */
+        0xFFFF00FF, /* Magenta */
+        0xFFFFFF00, /* Cyan */
+        0xFFFFFFFF, /* White */
+        0xFF808080, /* Gray */
+    };
+    uint32_t bar_h = h / 8;
+    for (uint32_t i = 0; i < 8; i++) {
+        uint32_t y0 = i * bar_h;
+        uint32_t y1 = (i == 7) ? h : y0 + bar_h;
+        for (uint32_t y = y0; y < y1; y++)
+            for (uint32_t x = 0; x < w; x++)
+                fb[y * w + x] = colors[i];
+    }
+
+    if (virtio_gpu_flush(&gpu_dev, 0, 0, w, h) == 0) {
+        uart_puts("[GPU] Color bars displayed!\n");
+    }
+
+    uart_puts("[GPU] Demo complete.\n");
+    uart_puts("[GPU] Connect VNC viewer to :5900 to see the display,\n");
+    uart_puts("[GPU] or use QEMU monitor 'screendump /tmp/frame.ppm'\n\n");
+}
+
 void main(void) {
     uart_init();
     uart_puts("\n==========================================\n");
     uart_puts("  AArch64 Bare Metal Virtio Demo\n");
     uart_puts("  PCI ECAM / Virtio 1.x / Split VQ\n");
     uart_puts("  GICv3 Interrupts / WFI\n");
-    uart_puts("  Devices: RNG + Block + Network\n");
+    uart_puts("  Devices: RNG + Block + Network + GPU\n");
     uart_puts("==========================================\n\n");
 
     /* Initialize GICv3 and interrupt dispatch */
@@ -393,6 +500,7 @@ void main(void) {
     demo_rng();
     demo_blk();
     demo_net();
+    demo_gpu();
 
     /* Disable IRQs before halting */
     irq_disable();
