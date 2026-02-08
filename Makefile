@@ -7,7 +7,9 @@ OBJCOPY = $(CROSS)objcopy
 CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -mcpu=cortex-a53
 LDFLAGS = -nostdlib -T linker.ld
 
-OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o virtio_net.o virtio_gpu.o virtio_input.o gic.o irq.o timer.o sched.o context_switch.o
+OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o \
+       virtio_blk.o virtio_net.o virtio_gpu.o virtio_input.o gic.o irq.o \
+       timer.o sched.o context_switch.o liveupdate.o
 
 all: kernel.elf kernel.bin
 
@@ -28,6 +30,12 @@ context_switch.o: context_switch.S
 
 clean:
 	rm -f *.o kernel.elf kernel.bin
+
+# Write kernel.bin to disk.img as a live update.
+# Writes update header at sector 4, image at sector 6+.
+push_update: kernel.bin
+	@python3 push_update.py disk.img kernel.bin
+	@echo "Update staged on disk.img. Running kernel will pick it up."
 
 run: kernel.elf disk.img
 	@echo "VNC on :5900 (password: virtio), monitor on telnet :4444"
@@ -51,4 +59,4 @@ run: kernel.elf disk.img
 disk.img:
 	dd if=/dev/zero of=disk.img bs=1M count=1
 
-.PHONY: all clean run
+.PHONY: all clean run push_update
