@@ -1,17 +1,3 @@
-/*
- * Bare metal AArch64 virtio demo on QEMU virt machine.
- *
- * Demonstrates:
- *   - PCI ECAM enumeration and BAR assignment (I/O + 64-bit MMIO)
- *   - Virtio PCI capability parsing
- *   - Full virtio 1.x device initialization (shared helpers)
- *   - Split virtqueue with multi-descriptor chains
- *   - GICv3 interrupt controller + exception vector table
- *   - Interrupt-driven I/O (WFI instead of busy-polling)
- *   - virtio-rng: single-descriptor device-writable buffers
- *   - virtio-blk: 3-descriptor chains (header/data/status), read + write
- *   - virtio-net: 2 virtqueues (RX + TX), packet headers, ARP, ICMP
- */
 #include "uart.h"
 #include "pci.h"
 #include "gic.h"
@@ -33,7 +19,6 @@ static uint8_t rng_buf[64] __attribute__((aligned(64)));
 static uint8_t blk_buf[512] __attribute__((aligned(512)));
 static uint8_t blk_readback[512] __attribute__((aligned(512)));
 
-/* Network buffers */
 static uint8_t tx_frame[1514] __attribute__((aligned(16)));
 static uint8_t rx_frame[1514] __attribute__((aligned(16)));
 
@@ -55,8 +40,6 @@ static void print_mac(const uint8_t *mac) {
     }
 }
 
-/* ---- helpers to build network packets ---- */
-
 static void memset8(void *dst, uint8_t val, int n) {
     uint8_t *d = (uint8_t *)dst;
     for (int i = 0; i < n; i++) d[i] = val;
@@ -77,10 +60,7 @@ static uint16_t read16be(const uint8_t *p) {
     return (uint16_t)((uint16_t)p[0] << 8 | p[1]);
 }
 
-/*
- * Build an ARP request.
- * QEMU user-mode networking: guest is 10.0.2.15, gateway is 10.0.2.2.
- */
+
 static int build_arp_request(uint8_t *frame, const uint8_t *src_mac,
                              const uint8_t *src_ip, const uint8_t *target_ip)
 {
@@ -170,7 +150,7 @@ static void print_ethertype(uint16_t et) {
     else { uart_puts("0x"); uart_puthex(et); }
 }
 
-/* ---- Demo: virtio-rng with interrupt notification ---- */
+
 static void demo_rng(void) {
     uart_puts("--- virtio-rng demo (interrupt-driven) ---\n");
     if (virtio_rng_init(&rng_dev) < 0) {
@@ -178,7 +158,6 @@ static void demo_rng(void) {
         return;
     }
 
-    /* Register for interrupts */
     uint32_t irq = pci_get_irq(&rng_dev.pci);
     if (irq)
         irq_register_rng(&rng_dev.vpci, irq);
@@ -196,7 +175,6 @@ static void demo_rng(void) {
     uart_puts("\n");
 }
 
-/* ---- Demo: virtio-blk with interrupt-driven completion ---- */
 static void demo_blk(void) {
     uart_puts("--- virtio-blk demo (interrupt-driven) ---\n");
     if (virtio_blk_init(&blk_dev) < 0) {
@@ -204,7 +182,6 @@ static void demo_blk(void) {
         return;
     }
 
-    /* Register for interrupts */
     uint32_t irq = pci_get_irq(&blk_dev.pci);
     if (irq)
         irq_register_blk(&blk_dev.vpci, irq);
@@ -236,7 +213,6 @@ static void demo_blk(void) {
     uart_puts("\n");
 }
 
-/* ---- Demo: virtio-net with interrupt-driven RX ---- */
 static void demo_net(void) {
     uart_puts("--- virtio-net demo (interrupt-driven) ---\n");
     if (virtio_net_init(&net_dev) < 0) {
@@ -244,7 +220,6 @@ static void demo_net(void) {
         return;
     }
 
-    /* Register for interrupts */
     uint32_t irq = pci_get_irq(&net_dev.pci);
     if (irq)
         irq_register_net(&net_dev.vpci, irq);
@@ -253,7 +228,6 @@ static void demo_net(void) {
     uint8_t gw_ip[]   = {10, 0, 2, 2};
     uint8_t gw_mac[6] = {0};
 
-    /* --- Step 1: ARP request for gateway --- */
     uart_puts("[NET] Sending ARP request: who-has 10.0.2.2?\n");
     int arp_len = build_arp_request(tx_frame, net_dev.mac, our_ip, gw_ip);
     if (virtio_net_tx(&net_dev, tx_frame, (uint32_t)arp_len) < 0) {
@@ -262,18 +236,11 @@ static void demo_net(void) {
     }
     uart_puts("[NET] ARP sent, waiting for reply (WFI)...\n");
 
-    /* Wait for ARP reply using interrupts */
     int got_arp = 0;
     irq_net_rx_pending = 0;
     for (uint64_t t = 0; t < 50000000 && !got_arp; t++) {
-        /*
-         * Hybrid wait: check used ring, then WFI if nothing.
-         * The interrupt handler sets irq_net_rx_pending which
-         * causes WFI to return immediately (pending IRQ wakes CPU).
-         */
         int rxlen = virtio_net_rx(&net_dev, rx_frame, sizeof(rx_frame));
         if (rxlen <= 0) {
-            /* No packet — sleep until next interrupt */
             wfi();
             continue;
         }
@@ -304,7 +271,6 @@ static void demo_net(void) {
         memset8(gw_mac, 0xff, 6);
     }
 
-    /* --- Step 2: ICMP echo (ping) to gateway --- */
     uart_puts("\n[NET] Sending ICMP echo to 10.0.2.2...\n");
     int ping_len = build_icmp_echo(tx_frame, net_dev.mac, gw_mac,
                                    our_ip, gw_ip, 1);
@@ -317,7 +283,6 @@ static void demo_net(void) {
         return;
     }
 
-    /* Wait for echo reply using interrupts */
     uart_puts("[NET] Waiting for echo reply (WFI)...\n");
     int got_pong = 0;
     irq_net_rx_pending = 0;
@@ -356,7 +321,6 @@ static void demo_net(void) {
     else
         uart_puts("[NET] No echo reply (timeout)\n");
 
-    /* --- Step 3: Drain remaining packets --- */
     uart_puts("\n[NET] Draining remaining packets...\n");
     int drained = 0;
     for (uint64_t t = 0; t < 5000000; t++) {
@@ -375,7 +339,6 @@ static void demo_net(void) {
     uart_puts(" extra packets\n\n");
 }
 
-/* ---- Demo: virtio-gpu 2D rendering ---- */
 static void demo_gpu(void) {
     uart_puts("--- virtio-gpu demo (2D framebuffer) ---\n");
     if (virtio_gpu_init(&gpu_dev) < 0) {
@@ -383,7 +346,6 @@ static void demo_gpu(void) {
         return;
     }
 
-    /* Register for interrupts */
     uint32_t irq = pci_get_irq(&gpu_dev.pci);
     if (irq)
         irq_register_gpu(&gpu_dev.vpci, irq);
@@ -392,12 +354,6 @@ static void demo_gpu(void) {
     uint32_t w = gpu_dev.width;
     uint32_t h = gpu_dev.height;
 
-    /*
-     * Draw a colorful test pattern:
-     *   - Red/green/blue/white quadrants
-     *   - Gradient bars within each quadrant
-     *   - A centered yellow rectangle
-     */
     uart_puts("[GPU] Drawing test pattern...\n");
 
     uint32_t hw = w / 2;
@@ -425,16 +381,14 @@ static void demo_gpu(void) {
         }
     }
 
-    /* Draw a centered yellow rectangle (160x120) */
     uint32_t rx = (w - 160) / 2;
     uint32_t ry = (h - 120) / 2;
     for (uint32_t y = ry; y < ry + 120; y++) {
         for (uint32_t x = rx; x < rx + 160; x++) {
-            fb[y * w + x] = 0xFF00FFFF; /* Yellow in RGBA (R=0xFF, G=0xFF, B=0, A=0xFF) */
+            fb[y * w + x] = 0xFF00FFFF;
         }
     }
 
-    /* Flush entire framebuffer to display */
     uart_puts("[GPU] Flushing to display...\n");
     if (virtio_gpu_flush(&gpu_dev, 0, 0, w, h) == 0) {
         uart_puts("[GPU] FLUSH OK — test pattern displayed!\n");
@@ -443,10 +397,6 @@ static void demo_gpu(void) {
         uart_puts("[GPU] FLUSH FAILED\n");
     }
 
-    /*
-     * Draw a second frame: color bars.
-     * Delay ~2 seconds so the first frame is visible on VNC.
-     */
     uart_puts("[GPU] Pausing 2s...\n");
     for (volatile uint64_t d = 0; d < 600000000; d++)
         ;
@@ -480,7 +430,6 @@ static void demo_gpu(void) {
     uart_puts("[GPU] or use QEMU monitor 'screendump /tmp/frame.ppm'\n\n");
 }
 
-/* ---- Demo: virtio-input (keyboard + mouse from VNC) ---- */
 static void demo_input(void) {
     uart_puts("--- virtio-input demo (keyboard/mouse) ---\n");
     int count = virtio_input_init_all();
@@ -489,7 +438,6 @@ static void demo_input(void) {
         return;
     }
 
-    /* Register all input devices for interrupts */
     for (int i = 0; i < count; i++) {
         struct virtio_input *dev = virtio_input_get_dev(i);
         uint32_t irq = pci_get_irq(&dev->pci);
@@ -507,19 +455,17 @@ static void demo_input(void) {
     int done = 0;
     int evt_count = 0;
     uint64_t loop_count = 0;
-    uint64_t max_loops = 50000000; /* Auto-exit after ~5s if no ESC */
+    uint64_t max_loops = 50000000;
     struct virtio_input_event evt;
 
     while (!done && loop_count < max_loops) {
         loop_count++;
 
-        /* Periodic heartbeat every ~10M iterations */
         if ((loop_count % 10000000) == 0) {
             uart_puts("[INPUT] heartbeat, loops=");
             uart_putdec(loop_count);
             uart_puts(" events=");
             uart_putdec((uint64_t)evt_count);
-            /* Dump used ring index for keyboard eventq */
             struct virtio_input *kbd = virtio_input_get_dev(0);
             if (kbd) {
                 uart_puts(" kbd_used_idx=");
@@ -531,9 +477,7 @@ static void demo_input(void) {
         }
 
         if (virtio_input_poll(&evt)) {
-            /* Filter out EV_SYN noise */
             if (evt.type == EV_SYN) {
-                /* Still count SYN to prove events are arriving */
                 evt_count++;
                 continue;
             }
@@ -554,7 +498,6 @@ static void demo_input(void) {
                     uart_puts("\n");
                 }
 
-                /* ESC key release ends the demo */
                 if (evt.code == KEY_ESC && evt.value == 0)
                     done = 1;
 
@@ -613,13 +556,6 @@ static void demo_input(void) {
     uart_puts(" events.\n\n");
 }
 
-/* ---- Demo: Timer + Preemptive Scheduler ---- */
-
-/*
- * Three demo tasks that run concurrently, preempted by the timer.
- * Each task does some "work" (busy loop + prints), then finishes.
- * The scheduler round-robins between them on every timer tick.
- */
 
 static void task_counter(void *arg) {
     const char *label = (const char *)arg;
@@ -634,7 +570,7 @@ static void task_counter(void *arg) {
         uart_putdec(timer_ms());
         uart_puts("ms)\n");
 
-        /* Busy work — will get preempted by timer */
+        /* Busy wait — will get preempted */
         for (volatile uint64_t d = 0; d < 20000000; d++)
             ;
     }
@@ -689,10 +625,8 @@ static void demo_sched(void) {
     timer_init(10);
     irq_register_timer();
 
-    /* Initialize scheduler (current context becomes idle task) */
     sched_init();
 
-    /* Create worker tasks */
     sched_create("counter-A", task_counter, (void *)"A");
     sched_create("counter-B", task_counter, (void *)"B");
     sched_create("fibonacci", task_fibonacci, NULL);
@@ -700,16 +634,11 @@ static void demo_sched(void) {
 
     uart_puts("\n[SCHED] Starting tasks...\n\n");
 
-    /*
-     * Idle loop: yield to worker tasks.
-     * When all workers finish, pick_next returns idle (us),
-     * and we break out.
-     */
+    
     int alive;
     do {
         sched_yield();
 
-        /* Check if any non-idle tasks are still running */
         alive = 0;
         for (int i = 1; i < sched_task_count(); i++) {
             struct task *t = sched_get_task(i);
@@ -718,7 +647,6 @@ static void demo_sched(void) {
         }
     } while (alive);
 
-    /* Stop the timer */
     timer_disable();
 
     uart_puts("\n[SCHED] All tasks finished!\n");
@@ -728,7 +656,6 @@ static void demo_sched(void) {
     uart_putdec(timer_ms());
     uart_puts("ms\n");
 
-    /* Print per-task stats */
     uart_puts("[SCHED] Task stats:\n");
     for (int i = 0; i < sched_task_count(); i++) {
         struct task *t = sched_get_task(i);
@@ -752,18 +679,10 @@ static void demo_sched(void) {
 void main(void) {
     uart_init();
     uart_puts("\n==========================================\n");
-    uart_puts("  AArch64 Bare Metal Virtio Demo\n");
-    uart_puts("  PCI ECAM / Virtio 1.x / Split VQ\n");
-    uart_puts("  GICv3 Interrupts / WFI\n");
-    uart_puts("  Devices: RNG + Block + Network + GPU + Input\n");
-    uart_puts("  Timer + Preemptive Scheduler\n");
-    uart_puts("==========================================\n\n");
 
-    /* Initialize GICv3 and interrupt dispatch */
     gic_init();
     irq_init();
 
-    /* Enable IRQs at CPU level */
     irq_enable();
     uart_puts("[IRQ] CPU interrupts enabled\n\n");
 
@@ -777,12 +696,9 @@ void main(void) {
     // demo_input();
     demo_sched();
 
-    /* Disable IRQs before halting */
     irq_disable();
 
-    uart_puts("==========================================\n");
-    uart_puts("  All demos complete. System halted.\n");
-    uart_puts("==========================================\n");
+    uart_puts("==============HALT !!!=============\n");
 
     for (;;)
         __asm__ volatile("wfe");
