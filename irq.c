@@ -63,17 +63,8 @@ static void register_dev(struct virtio_pci_dev *vpci, volatile int *flag,
     gic_enable_irq(irq_id);
 
     /* Verify it's enabled */
-    uint32_t reg = irq_id / 32;
-    uint32_t bit = irq_id % 32;
-    uint32_t enabled = mmio_read32(GICD_BASE + 0x0100 + 4 * reg);
     uart_puts("[IRQ] Registered device on IRQ ");
     uart_putdec(irq_id);
-    uart_puts(" ISENABLER=");
-    uart_puthex(enabled);
-    uart_puts(" bit=");
-    uart_putdec(bit);
-    uart_puts(" set=");
-    uart_putdec((enabled >> bit) & 1);
     uart_puts("\n");
 }
 
@@ -100,37 +91,20 @@ void irq_handler(void) {
     uint32_t iar = gic_ack();
 
     /* Spurious interrupt check (ID 1023) */
-    if (iar >= 1020) {
+    if (iar >= 1020)
         return;
-    }
-
-    uart_puts("[ISR] IRQ ");
-    uart_putdec(iar);
 
     /* Walk registered devices and check which ones share this IRQ */
-    int handled = 0;
     for (int i = 0; i < irq_dev_count; i++) {
         struct irq_dev_entry *e = &irq_devs[i];
         if (!e->active || e->irq_id != iar)
             continue;
 
-        /* Read virtio ISR status — this also clears the interrupt at device level */
+        /* Read virtio ISR status — clears the interrupt at device level */
         uint8_t isr = mmio_read8(e->vpci->isr_cfg);
-        if (isr & 1) {
-            /* Bit 0: used buffer notification */
-            *e->flag = 1;
-            handled = 1;
-        }
-        if (isr & 2) {
-            /* Bit 1: configuration change — we just note it */
-            handled = 1;
-        }
+        if (isr & 1)
+            *e->flag = 1;  /* used buffer notification */
     }
-
-    if (handled)
-        uart_puts(" OK\n");
-    else
-        uart_puts(" unhandled\n");
 
     /* Signal End of Interrupt */
     gic_eoi(iar);

@@ -259,16 +259,20 @@ static void demo_net(void) {
 
     /* Wait for ARP reply using interrupts */
     int got_arp = 0;
+    irq_net_rx_pending = 0;
     for (uint64_t t = 0; t < 50000000 && !got_arp; t++) {
-        /* WFI as power-saving hint — wakes on any interrupt */
-        if (!irq_net_rx_pending)
-            wfi();
-
+        /*
+         * Hybrid wait: check used ring, then WFI if nothing.
+         * The interrupt handler sets irq_net_rx_pending which
+         * causes WFI to return immediately (pending IRQ wakes CPU).
+         */
         int rxlen = virtio_net_rx(&net_dev, rx_frame, sizeof(rx_frame));
-        if (rxlen <= 0)
+        if (rxlen <= 0) {
+            /* No packet — sleep until next interrupt */
+            wfi();
             continue;
+        }
 
-        irq_net_rx_pending = 0;
         uint16_t ethertype = read16be(rx_frame + 12);
         uart_puts("[NET] RX ");
         uart_putdec((uint64_t)rxlen);
@@ -311,15 +315,14 @@ static void demo_net(void) {
     /* Wait for echo reply using interrupts */
     uart_puts("[NET] Waiting for echo reply (WFI)...\n");
     int got_pong = 0;
+    irq_net_rx_pending = 0;
     for (uint64_t t = 0; t < 50000000 && !got_pong; t++) {
-        if (!irq_net_rx_pending)
-            wfi();
-
         int rxlen = virtio_net_rx(&net_dev, rx_frame, sizeof(rx_frame));
-        if (rxlen <= 0)
+        if (rxlen <= 0) {
+            wfi();
             continue;
+        }
 
-        irq_net_rx_pending = 0;
         uint16_t ethertype = read16be(rx_frame + 12);
         uart_puts("[NET] RX ");
         uart_putdec((uint64_t)rxlen);

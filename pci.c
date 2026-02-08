@@ -142,8 +142,6 @@ void pci_enable_device(struct pci_device *dev) {
 
     uart_puts("  IRQ pin=");
     uart_putdec(dev->irq_pin);
-    uart_puts(" line=");
-    uart_putdec(pci_config_read8(dev->bus, dev->dev, dev->func, PCI_INTERRUPT_LINE));
     uart_puts("\n");
 }
 
