@@ -48,6 +48,10 @@
 /* PCI capability IDs */
 #define PCI_CAP_ID_VENDOR   0x09
 
+/* PCI interrupt pin / line offsets */
+#define PCI_INTERRUPT_LINE  0x3C
+#define PCI_INTERRUPT_PIN   0x3D
+
 /* Discovered PCI device info */
 struct pci_device {
     uint8_t  bus;
@@ -55,9 +59,17 @@ struct pci_device {
     uint8_t  func;
     uint16_t vendor_id;
     uint16_t device_id;
+    uint8_t  irq_pin;       /* PCI interrupt pin (1=INTA, 2=INTB, ...) */
     uint32_t bar[6];
     uintptr_t bar_addr[6];  /* mapped addresses */
 };
+
+/*
+ * Get the GIC IRQ ID for a PCI device based on its interrupt pin.
+ * QEMU virt: INTA=SPI3(35), INTB=SPI4(36), INTC=SPI5(37), INTD=SPI6(38)
+ * Returns 0 if no interrupt pin assigned.
+ */
+uint32_t pci_get_irq(struct pci_device *dev);
 
 /* ECAM config space access */
 static inline uintptr_t pci_ecam_addr(uint8_t bus, uint8_t dev, uint8_t func, uint16_t offset) {

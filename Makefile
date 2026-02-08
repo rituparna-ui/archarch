@@ -7,7 +7,7 @@ OBJCOPY = $(CROSS)objcopy
 CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -mcpu=cortex-a53
 LDFLAGS = -nostdlib -T linker.ld
 
-OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o virtio_net.o
+OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o virtio_net.o gic.o irq.o
 
 all: kernel.elf kernel.bin
 
@@ -28,7 +28,7 @@ clean:
 
 run: kernel.elf disk.img
 	qemu-system-aarch64 \
-		-machine virt \
+		-machine virt,gic-version=3 \
 		-cpu cortex-a53 \
 		-m 128M \
 		-nographic \

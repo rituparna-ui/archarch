@@ -9,6 +9,8 @@ SECTIONS
 {
     .text : {
         *(.text.boot)
+        . = ALIGN(2048);
+        *(.vectors)
         *(.text*)
     } > RAM
 

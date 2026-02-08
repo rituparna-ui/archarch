@@ -3,6 +3,7 @@
  * Scans bus 0 for devices, assigns BARs from a simple allocator.
  */
 #include "pci.h"
+#include "gic.h"
 #include "uart.h"
 
 /* Simple allocators for BAR assignment */
@@ -132,7 +133,35 @@ static void pci_assign_bars(struct pci_device *dev) {
 void pci_enable_device(struct pci_device *dev) {
     uint16_t cmd = pci_config_read16(dev->bus, dev->dev, dev->func, PCI_COMMAND);
     cmd |= PCI_CMD_IO | PCI_CMD_MEMORY | PCI_CMD_BUS_MASTER;
+    /* Make sure Interrupt Disable bit (bit 10) is NOT set */
+    cmd &= ~(1 << 10);
     pci_config_write16(dev->bus, dev->dev, dev->func, PCI_COMMAND, cmd);
+
+    /* Read interrupt pin (1=INTA, 2=INTB, 3=INTC, 4=INTD, 0=none) */
+    dev->irq_pin = pci_config_read8(dev->bus, dev->dev, dev->func, PCI_INTERRUPT_PIN);
+
+    uart_puts("  IRQ pin=");
+    uart_putdec(dev->irq_pin);
+    uart_puts(" line=");
+    uart_putdec(pci_config_read8(dev->bus, dev->dev, dev->func, PCI_INTERRUPT_LINE));
+    uart_puts("\n");
+}
+
+uint32_t pci_get_irq(struct pci_device *dev) {
+    if (dev->irq_pin == 0)
+        return 0;
+    /*
+     * QEMU virt PCI interrupt swizzle (from device tree interrupt-map):
+     *   IRQ = SPI((pin - 1 + dev_slot) % 4 + 3) = GIC_SPI(3 + (pin-1+slot)%4)
+     *
+     * Device 0 INTA -> SPI 3 (IRQ 35)
+     * Device 1 INTA -> SPI 4 (IRQ 36)
+     * Device 2 INTA -> SPI 5 (IRQ 37)
+     * Device 3 INTA -> SPI 6 (IRQ 38)
+     * etc.
+     */
+    uint32_t spi = 3 + ((uint32_t)(dev->irq_pin - 1) + (uint32_t)dev->dev) % 4;
+    return GIC_SPI(spi);
 }
 
 void pci_enumerate(void) {
