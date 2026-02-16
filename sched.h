@@ -11,6 +11,7 @@
 #define SCHED_H
 
 #include "types.h"
+#include "fd.h"
 
 #define SCHED_MAX_TASKS  8
 #define SCHED_STACK_SIZE 8192   /* 8KB — needs room for IRQ/syscall frames */
@@ -50,6 +51,7 @@ struct task {
     uintptr_t           user_sp;     /* EL0 stack pointer */
     uintptr_t           ttbr0;       /* Per-process page table (0 = kernel) */
     int                 wait_for_tid; /* tid this task is waiting on (-1 = none) */
+    struct fd_table     fdt;          /* per-process file descriptor table */
 };
 
 /*

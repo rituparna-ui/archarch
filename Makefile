@@ -10,7 +10,7 @@ LDFLAGS = -nostdlib -T linker.ld
 OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o \
        virtio_blk.o virtio_net.o virtio_gpu.o virtio_input.o gic.o irq.o \
        timer.o sched.o context_switch.o pmm.o mmu.o kmalloc.o syscall.o \
-       user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o fat16.o
+       user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o fat16.o fd.o
 
 # User programs to put on the FAT16 disk
 UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin uprogs/shell.bin uprogs/badmem.bin uprogs/stksmash.bin
@@ -68,6 +68,7 @@ disk.img: $(UPROGS)
 	dd if=/dev/zero of=disk.img bs=1M count=32 2>/dev/null
 	mkfs.fat -F 16 -n VIRTDISK disk.img >/dev/null
 	for f in $(UPROGS); do mcopy -i disk.img $$f ::$$(basename $$f); done
+	mcopy -i disk.img uprogs/readme.txt ::README.TXT
 	@echo "Disk contents:"
 	@mdir -i disk.img :: 2>/dev/null || true
 

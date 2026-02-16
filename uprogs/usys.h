@@ -1,4 +1,19 @@
-/* Minimal syscall wrappers for user programs */
+/*
+ * User-space syscall wrappers — Unix-style with file descriptors.
+ *
+ * Syscall numbers:
+ *   0 = read(fd, buf, count)
+ *   1 = write(fd, buf, count)
+ *   2 = open(path, flags)
+ *   3 = close(fd)
+ *   4 = getpid()
+ *   5 = exit(code)
+ *   6 = yield()
+ *   7 = exec(name, namelen) → child tid
+ *   8 = wait(tid)
+ *   9 = sbrk(size)
+ *  10 = listdir(buf, buflen)
+ */
 #ifndef USYS_H
 #define USYS_H
 
@@ -6,79 +21,82 @@ typedef unsigned long uint64_t;
 typedef unsigned int  uint32_t;
 typedef long          int64_t;
 
-static inline int64_t sys_write(const char *buf, uint64_t len) {
-    int64_t ret;
-    __asm__ volatile(
-        "mov x0, %1\n"
-        "mov x1, %2\n"
-        "mov x8, #0\n"
-        "svc #0\n"
-        "mov %0, x0\n"
-        : "=r"(ret) : "r"(buf), "r"(len)
-        : "x0", "x1", "x8", "memory"
-    );
-    return ret;
+#define STDIN  0
+#define STDOUT 1
+#define STDERR 2
+
+#define O_RDONLY 0
+
+/* Generic 3-arg syscall helper */
+static inline int64_t _syscall3(uint64_t num, uint64_t a0, uint64_t a1, uint64_t a2) {
+    register uint64_t x0 __asm__("x0") = a0;
+    register uint64_t x1 __asm__("x1") = a1;
+    register uint64_t x2 __asm__("x2") = a2;
+    register uint64_t x8 __asm__("x8") = num;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x8) : "memory");
+    return (int64_t)x0;
 }
 
-static inline int64_t sys_getpid(void) {
-    int64_t ret;
-    __asm__ volatile("mov x8, #1\n svc #0\n mov %0, x0" : "=r"(ret) : : "x0", "x8");
-    return ret;
+static inline int64_t _syscall2(uint64_t num, uint64_t a0, uint64_t a1) {
+    return _syscall3(num, a0, a1, 0);
 }
 
-static inline void sys_exit(int code) {
-    __asm__ volatile(
-        "mov x0, %0\n mov x8, #2\n svc #0\n"
-        : : "r"((uint64_t)code) : "x0", "x8"
-    );
+static inline int64_t _syscall1(uint64_t num, uint64_t a0) {
+    return _syscall3(num, a0, 0, 0);
+}
+
+static inline int64_t _syscall0(uint64_t num) {
+    return _syscall3(num, 0, 0, 0);
+}
+
+/* File descriptor syscalls */
+static inline int64_t read(int fd, void *buf, uint64_t count) {
+    return _syscall3(0, (uint64_t)fd, (uint64_t)buf, count);
+}
+
+static inline int64_t write(int fd, const void *buf, uint64_t count) {
+    return _syscall3(1, (uint64_t)fd, (uint64_t)buf, count);
+}
+
+static inline int64_t open(const char *path, int flags) {
+    return _syscall2(2, (uint64_t)path, (uint64_t)flags);
+}
+
+static inline int64_t close(int fd) {
+    return _syscall1(3, (uint64_t)fd);
+}
+
+/* Process syscalls */
+static inline int64_t getpid(void) { return _syscall0(4); }
+
+static inline void exit(int code) {
+    _syscall1(5, (uint64_t)code);
     __builtin_unreachable();
 }
 
-static inline void sys_yield(void) {
-    __asm__ volatile("mov x8, #3\n svc #0\n" : : : "x0", "x8");
+static inline void yield(void) { _syscall0(6); }
+
+static inline int64_t exec(const char *name, uint64_t len) {
+    return _syscall2(7, (uint64_t)name, len);
 }
 
-static inline int64_t sys_exec(const char *name, uint64_t len) {
-    int64_t ret;
-    __asm__ volatile(
-        "mov x0, %1\n mov x1, %2\n mov x8, #5\n svc #0\n mov %0, x0\n"
-        : "=r"(ret) : "r"(name), "r"(len) : "x0", "x1", "x8", "memory"
-    );
-    return ret;
+static inline int64_t wait(int tid) { return _syscall1(8, (uint64_t)tid); }
+
+static inline int64_t sbrk(uint64_t size) { return _syscall1(9, size); }
+
+static inline int64_t listdir(char *buf, uint64_t buflen) {
+    return _syscall2(10, (uint64_t)buf, buflen);
 }
 
-static inline int64_t sys_read(char *buf, uint64_t maxlen) {
-    int64_t ret;
-    __asm__ volatile(
-        "mov x0, %1\n mov x1, %2\n mov x8, #6\n svc #0\n mov %0, x0\n"
-        : "=r"(ret) : "r"(buf), "r"(maxlen) : "x0", "x1", "x8", "memory"
-    );
-    return ret;
+/* Convenience helpers */
+static inline uint64_t strlen(const char *s) {
+    uint64_t n = 0;
+    while (s[n]) n++;
+    return n;
 }
 
-static inline int64_t sys_wait(int tid) {
-    int64_t ret;
-    __asm__ volatile(
-        "mov x0, %1\n mov x8, #7\n svc #0\n mov %0, x0\n"
-        : "=r"(ret) : "r"((uint64_t)tid) : "x0", "x8"
-    );
-    return ret;
-}
-
-static inline int64_t sys_listdir(char *buf, uint64_t buflen) {
-    int64_t ret;
-    __asm__ volatile(
-        "mov x0, %1\n mov x1, %2\n mov x8, #8\n svc #0\n mov %0, x0\n"
-        : "=r"(ret) : "r"(buf), "r"(buflen) : "x0", "x1", "x8", "memory"
-    );
-    return ret;
-}
-
-/* Helpers */
 static inline void print(const char *s) {
-    uint64_t len = 0;
-    while (s[len]) len++;
-    sys_write(s, len);
+    write(STDOUT, s, strlen(s));
 }
 
 static inline int streq(const char *a, const char *b) {
@@ -86,10 +104,14 @@ static inline int streq(const char *a, const char *b) {
     return *a == *b;
 }
 
-static inline uint64_t strlen(const char *s) {
-    uint64_t n = 0;
-    while (s[n]) n++;
-    return n;
-}
+/* Backward compat aliases */
+#define sys_write(buf, len)     write(STDOUT, buf, len)
+#define sys_read(buf, max)      read(STDIN, buf, max)
+#define sys_getpid()            getpid()
+#define sys_exit(c)             exit(c)
+#define sys_yield()             yield()
+#define sys_exec(n, l)          exec(n, l)
+#define sys_wait(t)             wait(t)
+#define sys_listdir(b, l)       listdir(b, l)
 
 #endif

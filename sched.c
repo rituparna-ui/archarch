@@ -19,6 +19,7 @@
 #include "uart.h"
 #include "pmm.h"
 #include "mmu.h"
+#include "fd.h"
 
 /* Assembly: drop_to_el0(entry, user_sp) */
 extern void drop_to_el0(uintptr_t entry, uintptr_t user_sp);
@@ -191,6 +192,7 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
     t->user_sp = USER_VA_STACK;    /* Stack top VA — same for all processes */
     t->ttbr0 = pgd;
     t->wait_for_tid = -1;
+    fd_table_init(&t->fdt);
 
     /* Kernel stack — used when this task traps to EL1 */
     uint8_t *kstack_top = &task_stacks[id][SCHED_STACK_SIZE];
@@ -296,6 +298,9 @@ void sched_exit(void) {
     uart_puts("\") finished\n");
 
     tasks[me].state = TASK_FINISHED;
+
+    /* Close all open file descriptors */
+    fd_table_destroy(&tasks[me].fdt);
 
     /* Wake any task that was waiting on us */
     for (int i = 0; i < num_tasks; i++) {
