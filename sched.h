@@ -48,6 +48,7 @@ struct task {
     int                 is_user; /* 1 if this is an EL0 user task */
     uintptr_t           user_entry;  /* EL0 entry point */
     uintptr_t           user_sp;     /* EL0 stack pointer */
+    uintptr_t           ttbr0;       /* Per-process page table (0 = kernel) */
 };
 
 /*

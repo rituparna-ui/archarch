@@ -4,7 +4,7 @@ AS = $(CROSS)as
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
-CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -mcpu=cortex-a53 -mstrict-align
+CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -march=armv8-a -mstrict-align
 LDFLAGS = -nostdlib -T linker.ld
 
 OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o virtio_net.o virtio_gpu.o virtio_input.o gic.o irq.o timer.o sched.o context_switch.o pmm.o mmu.o kmalloc.o syscall.o user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o
@@ -45,7 +45,7 @@ run: kernel.elf disk.img
 	@echo "VNC on :5900 (password: virtio), monitor on telnet :4444"
 	qemu-system-aarch64 \
 		-machine virt,gic-version=3 \
-		-cpu cortex-a53 \
+		-cpu max \
 		-m 128M \
 		-serial stdio \
 		-device virtio-rng-pci \

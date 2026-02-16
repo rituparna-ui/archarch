@@ -65,15 +65,21 @@ void mmu_init(void);
 void mmu_map_page(uintptr_t va, uintptr_t pa, uint64_t flags);
 
 /*
- * Map a range of physical pages as EL0-accessible (AP=01).
- * Splits the containing 2MB block into L3 page entries if needed.
- * Only the specified pages get AP=01; all others stay AP=00 (EL1 only).
+ * Create a per-process user page table (for TTBR0).
+ * Identity-maps user code and stack pages with AP=01 (EL0 accessible).
+ * Returns physical address of the L1 table, or 0 on failure.
  */
-void mmu_map_user_range(uintptr_t start, uint32_t num_pages);
+uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
+                                uintptr_t stack_pa, uint32_t stack_pages);
 
 /*
- * Map a single 4KB page as EL0-accessible.
+ * Switch TTBR0 to a user process page table.
+ * Pass 0 to switch back to kernel-only context.
  */
+void mmu_switch_ttbr0(uintptr_t pgd);
+
+/* Legacy — kept for compatibility */
+void mmu_map_user_range(uintptr_t start, uint32_t num_pages);
 void mmu_map_user_page(uintptr_t pa);
 
 #endif

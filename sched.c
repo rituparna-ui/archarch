@@ -93,6 +93,7 @@ int sched_create(const char *name, void (*entry)(void *), void *arg) {
     t->is_user = 0;
     t->user_entry = 0;
     t->user_sp = 0;
+    t->ttbr0 = 0;
 
     start_info[id].entry = entry;
     start_info[id].arg   = arg;
@@ -163,9 +164,15 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
     }
     uintptr_t ustack_top = (ustack_base + USER_STACK_PAGES * PAGE_SIZE) & ~0xFUL;
 
-    /* Map user code and stack pages as EL0-accessible in the MMU */
-    mmu_map_user_range(code_base, code_pages);
-    mmu_map_user_range(ustack_base, USER_STACK_PAGES);
+    /* Create per-process page table */
+    uintptr_t pgd = mmu_create_user_pgd(code_base, code_pages,
+                                         ustack_base, USER_STACK_PAGES);
+    if (!pgd) {
+        uart_puts("[SCHED] Cannot create user page table\n");
+        pmm_free_pages(code_base, code_pages);
+        pmm_free_pages(ustack_base, USER_STACK_PAGES);
+        return -1;
+    }
 
     int id = num_tasks++;
     struct task *t = &tasks[id];
@@ -176,6 +183,7 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
     t->is_user = 1;
     t->user_entry = code_base;
     t->user_sp = ustack_top;
+    t->ttbr0 = pgd;
 
     /* Kernel stack — used when this task traps to EL1 */
     uint8_t *kstack_top = &task_stacks[id][SCHED_STACK_SIZE];
@@ -225,6 +233,9 @@ static void switch_to(int next) {
     tasks[next].state = TASK_RUNNING;
     current_task = next;
 
+    /* Switch TTBR0 if the next task has a different page table */
+    mmu_switch_ttbr0(tasks[next].ttbr0);
+
     context_switch(&tasks[prev].ctx, &tasks[next].ctx);
 }
 
@@ -263,6 +274,7 @@ void sched_tick(void) {
             tasks[prev].state = TASK_READY;
         tasks[next].state = TASK_RUNNING;
         current_task = next;
+        mmu_switch_ttbr0(tasks[next].ttbr0);
         context_switch(&tasks[prev].ctx, &tasks[next].ctx);
     }
 }
