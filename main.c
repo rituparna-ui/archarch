@@ -455,7 +455,7 @@ static void demo_input(void) {
     int done = 0;
     int evt_count = 0;
     uint64_t loop_count = 0;
-    uint64_t max_loops = 50000000;
+    uint64_t max_loops = 5000000000;
     struct virtio_input_event evt;
 
     while (!done && loop_count < max_loops) {
@@ -676,7 +676,7 @@ static void demo_sched(void) {
     uart_puts("\n");
 }
 
-void main(void) {
+void kernel_main(void) {
     uart_init();
     uart_puts("\n==========================================\n");
 
@@ -692,9 +692,9 @@ void main(void) {
     // demo_rng();
     // demo_blk();
     // demo_net();
-    // demo_gpu();
-    // demo_input();
-    demo_sched();
+    demo_gpu();
+    demo_input();
+    // demo_sched();
 
     irq_disable();
 

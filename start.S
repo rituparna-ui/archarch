@@ -112,7 +112,7 @@ at_el1:
     isb
 
     /* Jump to C entry (IRQs still masked — main enables them) */
-    bl      main
+    bl      kernel_main
 
     /* Halt if main returns */
 3:
