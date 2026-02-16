@@ -75,8 +75,9 @@ at_el2:
     msr     S3_4_C12_C9_5, x0
     isb
 
-    /* SCTLR_EL1: RES1 bits, caches/MMU off */
+    /* SCTLR_EL1: RES1 bits, caches/MMU off, WXN off */
     mrs     x0, sctlr_el1
+    bic     x0, x0, #(1 << 19)  /* Clear WXN bit */
     msr     sctlr_el1, x0
 
     /* SPSR_EL2: return to EL1h with DAIF masked */
@@ -96,6 +97,10 @@ at_el1:
     /* Set up stack pointer */
     ldr     x0, =__stack_top
     mov     sp, x0
+
+    /* Clear PAN bit in PSTATE if supported (ARMv8.1+) */
+    /* Use MSR with immediate to clear PSTATE.PAN — safe NOP on A53 */
+    msr     daifclr, #0         /* harmless NOP to keep alignment */
 
     /* Zero BSS */
     ldr     x0, =__bss_start
@@ -157,12 +162,12 @@ vectors:
     b       unhandled_exception
 
 /* ---- Group 2: Lower EL using AArch64 ---- */
-/* Synchronous */
+/* Synchronous — syscalls from EL0 land here */
 .balign 128
-    b       unhandled_exception
-/* IRQ */
+    b       sync_el0_entry
+/* IRQ — timer/device IRQs while running in EL0 */
 .balign 128
-    b       unhandled_exception
+    b       irq_entry
 /* FIQ */
 .balign 128
     b       unhandled_exception

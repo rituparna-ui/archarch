@@ -158,3 +158,29 @@ void irq_handler(void) {
     /* Signal End of Interrupt */
     gic_eoi(iar);
 }
+
+/*
+ * Called when a synchronous exception from EL0 is NOT an SVC.
+ * Print diagnostic info and halt.
+ */
+void unhandled_sync_el0(void) {
+    uint64_t esr, elr, far;
+    __asm__ volatile("mrs %0, esr_el1"  : "=r"(esr));
+    __asm__ volatile("mrs %0, elr_el1"  : "=r"(elr));
+    __asm__ volatile("mrs %0, far_el1"  : "=r"(far));
+
+    uart_puts("\n[FAULT] Unhandled sync exception from EL0!\n");
+    uart_puts("  ESR_EL1 = "); uart_puthex(esr); uart_puts("\n");
+    uart_puts("  ELR_EL1 = "); uart_puthex(elr); uart_puts("\n");
+    uart_puts("  FAR_EL1 = "); uart_puthex(far); uart_puts("\n");
+
+    uint64_t ec = (esr >> 26) & 0x3F;
+    uart_puts("  EC = "); uart_puthex(ec);
+    if (ec == 0x20 || ec == 0x21)
+        uart_puts(" (Instruction abort)");
+    else if (ec == 0x24 || ec == 0x25)
+        uart_puts(" (Data abort)");
+    else if (ec == 0x15)
+        uart_puts(" (SVC)");
+    uart_puts("\n");
+}

@@ -1,71 +1,78 @@
 /*
- * System call handler (EL1 side).
+ * System call dispatch.
  *
- * Called from the synchronous exception vector when EL0 executes SVC #0.
- * Dispatches based on syscall number in x8.
+ * Handles SVC exceptions from EL0 user programs.
  */
 #include "syscall.h"
 #include "uart.h"
-#include "timer.h"
 #include "sched.h"
+#include "pmm.h"
 
-/* SYS_WRITE: write a string to UART from userspace buffer */
-static uint64_t sys_write(uint64_t buf, uint64_t len) {
-    const char *s = (const char *)buf;
-    for (uint64_t i = 0; i < len; i++)
-        uart_putc(s[i]);
-    return len;
-}
+void syscall_handler(uint64_t *regs) {
+    uint64_t syscall_num = regs[8];  /* x8 = syscall number */
+    uint64_t arg0 = regs[0];        /* x0 */
+    uint64_t arg1 = regs[1];        /* x1 */
 
-/* SYS_GETTIME: return milliseconds since boot */
-static uint64_t sys_gettime(void) {
-    return timer_ms();
-}
+    switch (syscall_num) {
 
-/* SYS_YIELD: voluntary yield */
-static uint64_t sys_yield(void) {
-    sched_yield();
-    return 0;
-}
+    case SYS_WRITE: {
+        /* write(buf, len) — print to UART */
+        const char *buf = (const char *)arg0;
+        uint64_t len = arg1;
+        for (uint64_t i = 0; i < len; i++) {
+            if (buf[i] == '\n')
+                uart_putc('\r');
+            uart_putc(buf[i]);
+        }
+        regs[0] = len;
+        break;
+    }
 
-/* SYS_EXIT: terminate current task */
-static uint64_t sys_exit(uint64_t code) {
-    (void)code;
-    sched_exit();
-    /* never reached */
-    return 0;
-}
+    case SYS_GETPID:
+        /* getpid() — return current task ID */
+        regs[0] = (uint64_t)sched_current_id();
+        break;
 
-/* SYS_GETPID: return current task ID */
-static uint64_t sys_getpid(void) {
-    return (uint64_t)sched_current_id();
-}
+    case SYS_EXIT: {
+        /* exit(code) — terminate current task, return to kernel */
+        uart_puts("[SYSCALL] exit(");
+        uart_putdec(arg0);
+        uart_puts(") — returning to kernel\n");
+        /*
+         * We can't call sched_exit here because we're not using the
+         * scheduler for user tasks yet. Instead, we manipulate the
+         * saved ELR to jump to a kernel return point.
+         * For now, just loop — the eret will return to user code
+         * which will spin. The timeout will kill QEMU.
+         *
+         * A proper implementation would longjmp back to kernel_main.
+         */
+        for (;;) __asm__ volatile("wfe");
+        break;
+    }
 
-/* SYS_SLEEP: busy-wait for approximately ms milliseconds */
-static uint64_t sys_sleep(uint64_t ms) {
-    uint64_t start = timer_ms();
-    while (timer_ms() - start < ms)
+    case SYS_YIELD:
+        /* yield() — give up CPU */
         sched_yield();
-    return 0;
-}
+        regs[0] = 0;
+        break;
 
-uint64_t syscall_handler(uint64_t x0, uint64_t x1, uint64_t x2,
-                         uint64_t x3, uint64_t x4, uint64_t x5,
-                         uint64_t x8)
-{
-    (void)x2; (void)x3; (void)x4; (void)x5;
+    case SYS_SBRK: {
+        /* sbrk(increment) — allocate pages */
+        uint64_t pages = (arg0 + PAGE_SIZE - 1) / PAGE_SIZE;
+        if (pages == 0) pages = 1;
+        uintptr_t addr = pmm_alloc_pages((uint32_t)pages);
+        regs[0] = addr ? addr : (uint64_t)-1;
+        break;
+    }
 
-    switch (x8) {
-    case SYS_WRITE:   return sys_write(x0, x1);
-    case SYS_GETTIME: return sys_gettime();
-    case SYS_YIELD:   return sys_yield();
-    case SYS_EXIT:    return sys_exit(x0);
-    case SYS_GETPID:  return sys_getpid();
-    case SYS_SLEEP:   return sys_sleep(x0);
     default:
         uart_puts("[SYSCALL] Unknown syscall ");
-        uart_putdec(x8);
+        uart_putdec(syscall_num);
+        uart_puts(" from task ");
+        uart_putdec((uint64_t)sched_current_id());
         uart_puts("\n");
-        return (uint64_t)-1;
+        regs[0] = (uint64_t)-1;
+        break;
     }
 }

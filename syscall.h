@@ -1,9 +1,11 @@
 /*
  * System call interface.
  *
- * Syscalls are invoked from EL0 via SVC #0.
- * The syscall number is passed in x8, arguments in x0-x5.
- * Return value goes in x0.
+ * User programs at EL0 invoke `svc #0` with:
+ *   x8 = syscall number
+ *   x0-x5 = arguments
+ *
+ * Return value in x0.
  */
 #ifndef SYSCALL_H
 #define SYSCALL_H
@@ -11,21 +13,24 @@
 #include "types.h"
 
 /* Syscall numbers */
-#define SYS_WRITE    0
-#define SYS_GETTIME  1
-#define SYS_YIELD    2
-#define SYS_EXIT     3
-#define SYS_GETPID   4
-#define SYS_SLEEP    5
-#define NR_SYSCALLS  6
+#define SYS_WRITE   0   /* write(buf, len) → bytes written */
+#define SYS_GETPID  1   /* getpid() → task id */
+#define SYS_EXIT    2   /* exit(code) → does not return */
+#define SYS_YIELD   3   /* yield() → 0 */
+#define SYS_SBRK    4   /* sbrk(increment) → old break, or -1 */
 
 /*
- * Called from the assembly exception vector.
- * x0-x5 are the syscall arguments, x8 is the syscall number.
- * Returns the value to place in x0 on return to EL0.
+ * Called from the synchronous exception vector when ESR_EL1
+ * indicates an SVC from AArch64 EL0.
+ *
+ * regs points to the saved register frame on the kernel stack:
+ *   regs[0] = x0, regs[1] = x1, ..., regs[30] = x30
+ *   regs[31] = saved SP_EL0
+ *   regs[32] = saved ELR_EL1
+ *   regs[33] = saved SPSR_EL1
+ *
+ * The return value is placed in regs[0] (x0).
  */
-uint64_t syscall_handler(uint64_t x0, uint64_t x1, uint64_t x2,
-                         uint64_t x3, uint64_t x4, uint64_t x5,
-                         uint64_t x8);
+void syscall_handler(uint64_t *regs);
 
 #endif

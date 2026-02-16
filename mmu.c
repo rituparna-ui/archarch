@@ -33,7 +33,7 @@
 static uint64_t l0_table[PT_ENTRIES] __attribute__((aligned(4096)));
 static uint64_t l1_table[PT_ENTRIES] __attribute__((aligned(4096)));
 static uint64_t l2_table_low[PT_ENTRIES] __attribute__((aligned(4096)));  /* 0x00000000-0x3FFFFFFF */
-static uint64_t l2_table_ram[PT_ENTRIES] __attribute__((aligned(4096)));  /* 0x40000000-0x7FFFFFFF */
+uint64_t l2_table_ram[PT_ENTRIES] __attribute__((aligned(4096)));  /* 0x40000000-0x7FFFFFFF — non-static for user.c */
 
 /* For PCI ECAM: 0x40_00000000 - 0x40_3FFFFFFF (1GB at L1 index 0 of a second L0 region) */
 static uint64_t l1_table_high[PT_ENTRIES] __attribute__((aligned(4096)));

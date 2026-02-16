@@ -12,6 +12,7 @@
 #include "virtio_input.h"
 #include "timer.h"
 #include "sched.h"
+#include "user.h"
 
 static struct virtio_rng rng_dev;
 static struct virtio_blk blk_dev;
@@ -746,6 +747,27 @@ static void demo_memory(void) {
     uart_puts("\n[TEST] Memory management OK!\n\n");
 }
 
+/* User program binary — defined in user_prog.S */
+extern char user_program_start[];
+extern char user_program_end[];
+
+static void demo_userspace(void) {
+    uart_puts("--- user space demo (EL0) ---\n\n");
+
+    uint32_t size = (uint32_t)(user_program_end - user_program_start);
+    uart_puts("[USER] Program size: ");
+    uart_putdec(size);
+    uart_puts(" bytes\n");
+
+    user_exec(user_program_start, size, "hello_user");
+
+    uart_puts("[USER] Returned to kernel (EL1)\n");
+    uart_puts("[USER] Demo complete.\n\n");
+}
+
+
+
+extern uintptr_t __kernel_end;
 
 extern uintptr_t __kernel_end;
 
@@ -769,6 +791,7 @@ void kernel_main(void) {
     uart_puts("\n");
 
     demo_memory();
+    demo_userspace();
 
     // demo_rng();
     // demo_blk();
