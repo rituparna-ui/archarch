@@ -84,6 +84,8 @@ static inline int64_t wait(int tid) { return _syscall1(8, (uint64_t)tid); }
 
 static inline int64_t sbrk(uint64_t size) { return _syscall1(9, size); }
 
+static inline int64_t fork(void) { return _syscall0(11); }
+
 static inline int64_t listdir(char *buf, uint64_t buflen) {
     return _syscall2(10, (uint64_t)buf, buflen);
 }

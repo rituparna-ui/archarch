@@ -55,6 +55,14 @@ void fd_table_destroy(struct fd_table *fdt) {
     }
 }
 
+void fd_table_dup(struct fd_table *dst, const struct fd_table *src) {
+    for (int i = 0; i < MAX_FDS_PER_TASK; i++) {
+        dst->fds[i] = src->fds[i];
+        if (dst->fds[i])
+            dst->fds[i]->ref_count++;
+    }
+}
+
 int fd_open(struct fd_table *fdt, const char *path, int flags) {
     int fd = find_free_fd(fdt);
     if (fd < 0) return -1;

@@ -24,6 +24,7 @@
 #define SYS_WAIT    8   /* wait(tid) → 0 */
 #define SYS_SBRK    9   /* sbrk(increment) → addr */
 #define SYS_LISTDIR 10  /* listdir(buf, buflen) → bytes written */
+#define SYS_FORK    11  /* fork() → child pid in parent, 0 in child */
 
 void syscall_handler(uint64_t *regs);
 

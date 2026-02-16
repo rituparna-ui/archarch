@@ -47,9 +47,12 @@ struct task {
     const char         *name;
     uint64_t            ticks;  /* number of timer ticks this task has run */
     int                 is_user; /* 1 if this is an EL0 user task */
-    uintptr_t           user_entry;  /* EL0 entry point */
-    uintptr_t           user_sp;     /* EL0 stack pointer */
-    uintptr_t           ttbr0;       /* Per-process page table (0 = kernel) */
+    uintptr_t           user_entry;  /* EL0 entry point VA */
+    uintptr_t           user_sp;     /* EL0 stack pointer VA */
+    uintptr_t           ttbr0;       /* Per-process page table PA (0 = kernel) */
+    uintptr_t           code_pa;     /* Physical address of user code pages */
+    uint32_t            code_pages;  /* Number of code pages */
+    uintptr_t           stack_pa;    /* Physical address of user stack pages */
     int                 wait_for_tid; /* tid this task is waiting on (-1 = none) */
     struct fd_table     fdt;          /* per-process file descriptor table */
 };
@@ -103,6 +106,14 @@ void sched_exit(void);
  * Returns 0 on success, -1 if tid is invalid.
  */
 int sched_wait(int tid);
+
+/*
+ * Fork the current user task.
+ * regs: pointer to the parent's saved syscall register frame.
+ * Returns child tid to parent (via regs[0]), 0 to child.
+ * Returns -1 on failure.
+ */
+int sched_fork(uint64_t *parent_regs);
 
 /*
  * Get the current task ID.

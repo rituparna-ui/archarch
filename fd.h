@@ -53,6 +53,11 @@ void fd_table_init(struct fd_table *fdt);
 void fd_table_destroy(struct fd_table *fdt);
 
 /*
+ * Duplicate a fd table (for fork). Increments ref counts on shared files.
+ */
+void fd_table_dup(struct fd_table *dst, const struct fd_table *src);
+
+/*
  * Open a file by path. Returns fd number, or -1 on error.
  */
 int fd_open(struct fd_table *fdt, const char *path, int flags);

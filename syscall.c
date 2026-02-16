@@ -145,6 +145,13 @@ done:   buf[pos] = '\0';
         break;
     }
 
+    case SYS_FORK: {
+        int child_tid = sched_fork(regs);
+        regs[0] = (uint64_t)child_tid;  /* Parent gets child tid */
+        /* Child will see 0 — set in sched_fork via child_frame[0] = 0 */
+        break;
+    }
+
     default:
         uart_puts("[SYSCALL] Unknown #");
         uart_putdec(num);

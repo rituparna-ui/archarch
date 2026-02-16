@@ -97,6 +97,9 @@ int sched_create(const char *name, void (*entry)(void *), void *arg) {
     t->user_entry = 0;
     t->user_sp = 0;
     t->ttbr0 = 0;
+    t->code_pa = 0;
+    t->code_pages = 0;
+    t->stack_pa = 0;
     t->wait_for_tid = -1;
 
     start_info[id].entry = entry;
@@ -190,9 +193,12 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
     t->name  = name;
     t->ticks = 0;
     t->is_user = 1;
-    t->user_entry = USER_VA_CODE;  /* Virtual address — same for all processes */
-    t->user_sp = USER_VA_STACK;    /* Stack top VA — same for all processes */
+    t->user_entry = USER_VA_CODE;
+    t->user_sp = USER_VA_STACK;
     t->ttbr0 = pgd;
+    t->code_pa = code_base;
+    t->code_pages = code_pages;
+    t->stack_pa = ustack_base;
     t->wait_for_tid = -1;
     fd_table_init(&t->fdt);
 
@@ -331,6 +337,183 @@ int sched_wait(int tid) {
     /* We've been woken up — target is finished */
     return 0;
 }
+
+/*
+ * Fork the current user task.
+ *
+ * parent_regs: the saved syscall frame on the parent's kernel stack.
+ * Layout: [x0..x30, SP_EL0, ELR_EL1, SPSR_EL1] (272 bytes, 34 uint64_t's)
+ *
+ * We:
+ *   1. Allocate new code + stack pages, copy parent's content
+ *   2. Create new page table
+ *   3. Allocate a new task slot with its own kernel stack
+ *   4. Build a fake syscall return frame on the child's kernel stack
+ *      so when the child is scheduled, it returns from the SVC with x0=0
+ *   5. Set up the child's task_context so context_switch lands in
+ *      a trampoline that does the eret from the fake frame
+ *
+ * Returns child tid to parent, child will see 0 when it runs.
+ */
+
+/* Trampoline: the child's first context_switch returns here.
+ * We restore the syscall frame and eret to EL0. */
+static void fork_child_return(void);
+
+/* Assembly helper defined below */
+extern void fork_child_trampoline(void);
+
+int sched_fork(uint64_t *parent_regs) {
+    struct task *parent = &tasks[current_task];
+
+    if (!parent->is_user) {
+        uart_puts("[FORK] Cannot fork non-user task\n");
+        return -1;
+    }
+    if (num_tasks >= SCHED_MAX_TASKS) {
+        uart_puts("[FORK] Too many tasks\n");
+        return -1;
+    }
+
+    /* 1. Copy user code pages */
+    uint32_t cpages = parent->code_pages;
+    uintptr_t child_code = pmm_alloc_pages(cpages);
+    if (!child_code) return -1;
+
+    uint8_t *csrc = (uint8_t *)phys_to_virt(parent->code_pa);
+    uint8_t *cdst = (uint8_t *)phys_to_virt(child_code);
+    for (uint32_t i = 0; i < cpages * PAGE_SIZE; i++)
+        cdst[i] = csrc[i];
+
+    /* Flush icache for copied code */
+    uintptr_t cva = phys_to_virt(child_code);
+    for (uint32_t i = 0; i < cpages * PAGE_SIZE; i += 64)
+        __asm__ volatile("dc cvau, %0" : : "r"(cva + i));
+    __asm__ volatile("dsb ish");
+    for (uint32_t i = 0; i < cpages * PAGE_SIZE; i += 64)
+        __asm__ volatile("ic ivau, %0" : : "r"(cva + i));
+    __asm__ volatile("dsb ish\n isb\n");
+
+    /* 2. Copy user stack pages (with guard) */
+    uintptr_t child_salloc = pmm_alloc_pages(USER_STACK_PAGES + 1);
+    if (!child_salloc) { pmm_free_pages(child_code, cpages); return -1; }
+    uintptr_t child_stack = child_salloc + PAGE_SIZE;  /* skip guard */
+
+    uint8_t *ssrc = (uint8_t *)phys_to_virt(parent->stack_pa);
+    uint8_t *sdst = (uint8_t *)phys_to_virt(child_stack);
+    for (uint32_t i = 0; i < USER_STACK_PAGES * PAGE_SIZE; i++)
+        sdst[i] = ssrc[i];
+
+    /* 3. Create child page table */
+    uintptr_t pgd = mmu_create_user_pgd(child_code, cpages,
+                                          child_stack, USER_STACK_PAGES);
+    if (!pgd) {
+        pmm_free_pages(child_code, cpages);
+        pmm_free_pages(child_salloc, USER_STACK_PAGES + 1);
+        return -1;
+    }
+
+    /* 4. Create child task */
+    int child_id = num_tasks++;
+    struct task *child = &tasks[child_id];
+
+    child->state = TASK_READY;
+    child->name = parent->name;
+    child->ticks = 0;
+    child->is_user = 1;
+    child->user_entry = USER_VA_CODE;
+    child->user_sp = USER_VA_STACK;
+    child->ttbr0 = pgd;
+    child->code_pa = child_code;
+    child->code_pages = cpages;
+    child->stack_pa = child_stack;
+    child->wait_for_tid = -1;
+
+    /* Duplicate file descriptor table */
+    fd_table_dup(&child->fdt, &parent->fdt);
+
+    /*
+     * 5. Build the child's kernel stack so it returns from the syscall.
+     *
+     * When the scheduler picks the child, it does context_switch which
+     * restores callee-saved regs and returns via x30. We set x30 to
+     * fork_child_return which restores the syscall frame and erets.
+     *
+     * The child's kernel stack layout (top to bottom):
+     *   [top - 272] = syscall frame (copy of parent's, with x0=0)
+     *   [top - 272] = SP for the eret trampoline
+     */
+    uint8_t *kstack_top = &task_stacks[child_id][SCHED_STACK_SIZE];
+    kstack_top = (uint8_t *)((uintptr_t)kstack_top & ~0xFUL);
+
+    /* Copy parent's syscall frame to child's kernel stack */
+    uint64_t *child_frame = (uint64_t *)(kstack_top - 272);
+    for (int i = 0; i < 34; i++)
+        child_frame[i] = parent_regs[i];
+
+    /* Child gets x0 = 0 (fork return value) */
+    child_frame[0] = 0;
+
+    /* Set up task_context so context_switch jumps to our trampoline */
+    child->ctx.sp = (uint64_t)(uintptr_t)child_frame;  /* SP points to the frame */
+    child->ctx.x30 = (uint64_t)(uintptr_t)fork_child_return;
+    child->ctx.x29 = 0;
+    child->ctx.x19 = 0; child->ctx.x20 = 0; child->ctx.x21 = 0;
+    child->ctx.x22 = 0; child->ctx.x23 = 0; child->ctx.x24 = 0;
+    child->ctx.x25 = 0; child->ctx.x26 = 0; child->ctx.x27 = 0;
+    child->ctx.x28 = 0;
+
+    uart_puts("[FORK] ");
+    uart_putdec((uint64_t)current_task);
+    uart_puts(" -> ");
+    uart_putdec((uint64_t)child_id);
+    uart_puts("\n");
+
+    return child_id;
+}
+
+/*
+ * Child trampoline: called via context_switch x30.
+ * SP points to the syscall frame. Restore and eret to EL0.
+ */
+static void fork_child_return(void) {
+    /* Re-enable IRQs (we're coming from context_switch inside IRQ/syscall) */
+    __asm__ volatile("msr daifclr, #2" ::: "memory");
+
+    /* SP already points to the syscall frame.
+     * Do the same restore sequence as sync_el0_entry. */
+    __asm__ volatile(
+        /* Restore SP_EL0, ELR_EL1, SPSR_EL1 */
+        "ldr x0, [sp, #248]\n"
+        "ldp x1, x2, [sp, #256]\n"
+        "msr sp_el0, x0\n"
+        "msr elr_el1, x1\n"
+        "msr spsr_el1, x2\n"
+
+        /* Restore x0-x30 */
+        "ldp x0,  x1,  [sp, #0]\n"
+        "ldp x2,  x3,  [sp, #16]\n"
+        "ldp x4,  x5,  [sp, #32]\n"
+        "ldp x6,  x7,  [sp, #48]\n"
+        "ldp x8,  x9,  [sp, #64]\n"
+        "ldp x10, x11, [sp, #80]\n"
+        "ldp x12, x13, [sp, #96]\n"
+        "ldp x14, x15, [sp, #112]\n"
+        "ldp x16, x17, [sp, #128]\n"
+        "ldp x18, x19, [sp, #144]\n"
+        "ldp x20, x21, [sp, #160]\n"
+        "ldp x22, x23, [sp, #176]\n"
+        "ldp x24, x25, [sp, #192]\n"
+        "ldp x26, x27, [sp, #208]\n"
+        "ldp x28, x29, [sp, #224]\n"
+        "ldr x30,       [sp, #240]\n"
+
+        "add sp, sp, #272\n"
+        "eret\n"
+    );
+    __builtin_unreachable();
+}
+
 
 int sched_current_id(void) {
     return current_task;
