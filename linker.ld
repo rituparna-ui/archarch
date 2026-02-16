@@ -34,4 +34,9 @@ SECTIONS
 
     . = ALIGN(4096);
     __virtq_area = .;
+
+    /* After virtq area, reserve some space then mark kernel end */
+    . = __virtq_area + 0x100000;  /* 1MB for virtqueue buffers */
+    . = ALIGN(4096);
+    __kernel_end = .;
 }

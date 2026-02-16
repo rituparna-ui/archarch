@@ -2,6 +2,9 @@
 #include "pci.h"
 #include "gic.h"
 #include "irq.h"
+#include "pmm.h"
+#include "mmu.h"
+#include "kmalloc.h"
 #include "virtio_rng.h"
 #include "virtio_blk.h"
 #include "virtio_net.h"
@@ -676,9 +679,85 @@ static void demo_sched(void) {
     uart_puts("\n");
 }
 
+static void demo_memory(void) {
+    uart_puts("--- memory management demo ---\n\n");
+
+    /* PMM: allocate and free individual pages */
+    uart_puts("[TEST] Allocating 4 pages...\n");
+    uintptr_t p1 = pmm_alloc_page();
+    uintptr_t p2 = pmm_alloc_page();
+    uintptr_t p3 = pmm_alloc_page();
+    uintptr_t p4 = pmm_alloc_page();
+    uart_puts("  p1="); uart_puthex(p1); uart_puts("\n");
+    uart_puts("  p2="); uart_puthex(p2); uart_puts("\n");
+    uart_puts("  p3="); uart_puthex(p3); uart_puts("\n");
+    uart_puts("  p4="); uart_puthex(p4); uart_puts("\n");
+
+    uart_puts("[TEST] Freeing p2 and p3...\n");
+    pmm_free_page(p2);
+    pmm_free_page(p3);
+    uart_puts("  Free pages: "); uart_putdec(pmm_free_count()); uart_puts("\n");
+
+    uart_puts("[TEST] Allocating 8 contiguous pages...\n");
+    uintptr_t contig = pmm_alloc_pages(8);
+    uart_puts("  contig="); uart_puthex(contig); uart_puts("\n");
+    pmm_free_pages(contig, 8);
+    pmm_free_page(p1);
+    pmm_free_page(p4);
+
+    /* Heap: kmalloc / kfree */
+    uart_puts("\n[TEST] kmalloc tests...\n");
+    uint8_t *a = kmalloc(128);
+    uint8_t *b = kmalloc(4096);
+    uint8_t *c = kzalloc(256);
+
+    uart_puts("  a="); uart_puthex((uintptr_t)a);
+    uart_puts(" b="); uart_puthex((uintptr_t)b);
+    uart_puts(" c="); uart_puthex((uintptr_t)c); uart_puts("\n");
+
+    /* Verify kzalloc zeroed the memory */
+    int zero_ok = 1;
+    for (int i = 0; i < 256; i++) {
+        if (c[i] != 0) { zero_ok = 0; break; }
+    }
+    uart_puts("  kzalloc zero check: ");
+    uart_puts(zero_ok ? "PASS" : "FAIL");
+    uart_puts("\n");
+
+    /* Write and read back */
+    for (int i = 0; i < 128; i++) a[i] = (uint8_t)i;
+    int rw_ok = 1;
+    for (int i = 0; i < 128; i++) {
+        if (a[i] != (uint8_t)i) { rw_ok = 0; break; }
+    }
+    uart_puts("  heap R/W check: ");
+    uart_puts(rw_ok ? "PASS" : "FAIL");
+    uart_puts("\n");
+
+    kmalloc_dump_stats();
+
+    kfree(b);
+    kfree(a);
+    kfree(c);
+
+    uart_puts("  After free:\n");
+    kmalloc_dump_stats();
+
+    uart_puts("\n[TEST] Memory management OK!\n\n");
+}
+
+
+extern uintptr_t __kernel_end;
+
 void kernel_main(void) {
     uart_init();
     uart_puts("\n==========================================\n");
+
+    /* Memory management — must come before anything that allocates */
+    pmm_init((uintptr_t)&__kernel_end);
+    mmu_init();
+    kmalloc_init();
+    uart_puts("\n");
 
     gic_init();
     irq_init();
@@ -689,11 +768,13 @@ void kernel_main(void) {
     pci_enumerate();
     uart_puts("\n");
 
+    demo_memory();
+
     // demo_rng();
     // demo_blk();
     // demo_net();
-    demo_gpu();
-    demo_input();
+    // demo_gpu();
+    // demo_input();
     // demo_sched();
 
     irq_disable();
