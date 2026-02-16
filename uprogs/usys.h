@@ -86,6 +86,14 @@ static inline int64_t sbrk(uint64_t size) { return _syscall1(9, size); }
 
 static inline int64_t fork(void) { return _syscall0(11); }
 
+static inline int64_t pipe(int fds[2]) {
+    return _syscall1(12, (uint64_t)fds);
+}
+
+static inline int64_t dup2(int oldfd, int newfd) {
+    return _syscall2(13, (uint64_t)oldfd, (uint64_t)newfd);
+}
+
 static inline int64_t listdir(char *buf, uint64_t buflen) {
     return _syscall2(10, (uint64_t)buf, buflen);
 }

@@ -147,8 +147,24 @@ done:   buf[pos] = '\0';
 
     case SYS_FORK: {
         int child_tid = sched_fork(regs);
-        regs[0] = (uint64_t)child_tid;  /* Parent gets child tid */
-        /* Child will see 0 — set in sched_fork via child_frame[0] = 0 */
+        regs[0] = (uint64_t)child_tid;
+        break;
+    }
+
+    case SYS_PIPE: {
+        int *user_fds = (int *)arg0;
+        int fds[2];
+        int ret = fd_pipe(current_fdt(), fds);
+        if (ret == 0) {
+            user_fds[0] = fds[0];
+            user_fds[1] = fds[1];
+        }
+        regs[0] = (uint64_t)ret;
+        break;
+    }
+
+    case SYS_DUP2: {
+        regs[0] = (uint64_t)fd_dup2(current_fdt(), (int)arg0, (int)arg1);
         break;
     }
 

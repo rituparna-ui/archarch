@@ -25,6 +25,8 @@
 #define SYS_SBRK    9   /* sbrk(increment) → addr */
 #define SYS_LISTDIR 10  /* listdir(buf, buflen) → bytes written */
 #define SYS_FORK    11  /* fork() → child pid in parent, 0 in child */
+#define SYS_PIPE    12  /* pipe(fds_ptr) → 0, writes [read_fd, write_fd] */
+#define SYS_DUP2    13  /* dup2(oldfd, newfd) → newfd */
 
 void syscall_handler(uint64_t *regs);
 

@@ -13,7 +13,7 @@ OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o \
        user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o fat16.o fd.o
 
 # User programs to put on the FAT16 disk
-UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin uprogs/shell.bin uprogs/badmem.bin uprogs/stksmash.bin uprogs/forktest.bin
+UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin uprogs/shell.bin uprogs/badmem.bin uprogs/stksmash.bin uprogs/forktest.bin uprogs/pipetest.bin
 
 # User program C flags
 UCFLAGS = -ffreestanding -nostdlib -nostartfiles -O2 -march=armv8-a -mstrict-align -I uprogs
@@ -67,6 +67,13 @@ uprogs/forktest.bin: uprogs/forktest.c uprogs/crt0.S uprogs/usys.h user_link.ld
 	$(CC) $(UCFLAGS) -c -o uprogs/forktest.o uprogs/forktest.c
 	$(LD) -nostdlib -T user_link.ld -o uprogs/forktest.elf uprogs/crt0.o uprogs/forktest.o
 	$(OBJCOPY) -O binary uprogs/forktest.elf $@
+	@echo "  UPROG $@ ($$(stat -c%s $@) bytes)"
+
+uprogs/pipetest.bin: uprogs/pipetest.c uprogs/crt0.S uprogs/usys.h user_link.ld
+	$(AS) -o uprogs/crt0.o uprogs/crt0.S
+	$(CC) $(UCFLAGS) -c -o uprogs/pipetest.o uprogs/pipetest.c
+	$(LD) -nostdlib -T user_link.ld -o uprogs/pipetest.elf uprogs/crt0.o uprogs/pipetest.o
+	$(OBJCOPY) -O binary uprogs/pipetest.elf $@
 	@echo "  UPROG $@ ($$(stat -c%s $@) bytes)"
 
 # Create FAT16 disk image with user programs

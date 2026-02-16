@@ -5,6 +5,7 @@
 #include "uart.h"
 #include "kmalloc.h"
 #include "fat16.h"
+#include "sched.h"
 
 extern struct fat16_fs root_fs;
 
@@ -92,6 +93,21 @@ int fd_close(struct fd_table *fdt, int fd) {
         return -1;
 
     struct open_file *f = fdt->fds[fd];
+
+    /* Track pipe end closure — only when last reference closes */
+    if (f->type == FD_TYPE_PIPE && f->pipe && f->ref_count <= 1) {
+        if (f->flags == O_RDONLY)
+            f->pipe->read_open = 0;
+        else if (f->flags == O_WRONLY)
+            f->pipe->write_open = 0;
+
+        /* Free pipe when both ends are closed */
+        if (!f->pipe->read_open && !f->pipe->write_open) {
+            kfree(f->pipe);
+            f->pipe = NULL;
+        }
+    }
+
     f->ref_count--;
     if (f->ref_count <= 0 && f != &console_file)
         free_file(f);
@@ -132,6 +148,29 @@ int fd_read(struct fd_table *fdt, int fd, void *buf, uint32_t count) {
             }
         }
         return (int)i;
+    }
+
+    if (f->type == FD_TYPE_PIPE) {
+        struct pipe *p = f->pipe;
+        if (!p) return -1;
+
+        uint8_t *dst = (uint8_t *)buf;
+        uint32_t total = 0;
+
+        /* Wait for at least one byte (or EOF) */
+        while (p->count == 0) {
+            if (!p->write_open)
+                return 0;  /* EOF */
+            sched_yield();
+        }
+
+        /* Read what's available (don't wait for full count — Unix semantics) */
+        while (total < count && p->count > 0) {
+            dst[total++] = p->buf[p->read_pos];
+            p->read_pos = (p->read_pos + 1) % PIPE_BUF_SIZE;
+            p->count--;
+        }
+        return (int)total;
     }
 
     if (f->type == FD_TYPE_FILE) {
@@ -200,6 +239,87 @@ int fd_write(struct fd_table *fdt, int fd, const void *buf, uint32_t count) {
         return (int)count;
     }
 
+    if (f->type == FD_TYPE_PIPE) {
+        struct pipe *p = f->pipe;
+        if (!p || !p->read_open) return -1;  /* Broken pipe */
+
+        const uint8_t *src = (const uint8_t *)buf;
+        uint32_t total = 0;
+
+        while (total < count) {
+            while (p->count == PIPE_BUF_SIZE) {
+                if (!p->read_open) return -1;
+                sched_yield();
+            }
+            while (total < count && p->count < PIPE_BUF_SIZE) {
+                p->buf[p->write_pos] = src[total++];
+                p->write_pos = (p->write_pos + 1) % PIPE_BUF_SIZE;
+                p->count++;
+            }
+        }
+
+        return (int)total;
+    }
+
     /* File write not supported yet */
     return -1;
+}
+
+int fd_pipe(struct fd_table *fdt, int fds[2]) {
+    int rfd = find_free_fd(fdt);
+    if (rfd < 0) return -1;
+
+    /* Temporarily mark it so find_free_fd skips it */
+    struct open_file dummy;
+    fdt->fds[rfd] = &dummy;
+
+    int wfd = find_free_fd(fdt);
+    fdt->fds[rfd] = NULL;
+    if (wfd < 0) return -1;
+
+    /* Allocate pipe */
+    struct pipe *p = kzalloc(sizeof(struct pipe));
+    if (!p) return -1;
+    p->read_open = 1;
+    p->write_open = 1;
+
+    /* Read end */
+    struct open_file *rf = alloc_file();
+    if (!rf) { kfree(p); return -1; }
+    rf->type = FD_TYPE_PIPE;
+    rf->flags = O_RDONLY;
+    rf->ref_count = 1;
+    rf->pipe = p;
+
+    /* Write end */
+    struct open_file *wf = alloc_file();
+    if (!wf) { kfree(p); free_file(rf); return -1; }
+    wf->type = FD_TYPE_PIPE;
+    wf->flags = O_WRONLY;
+    wf->ref_count = 1;
+    wf->pipe = p;
+
+    fdt->fds[rfd] = rf;
+    fdt->fds[wfd] = wf;
+    fds[0] = rfd;
+    fds[1] = wfd;
+
+    return 0;
+}
+
+int fd_dup2(struct fd_table *fdt, int oldfd, int newfd) {
+    if (oldfd < 0 || oldfd >= MAX_FDS_PER_TASK || !fdt->fds[oldfd])
+        return -1;
+    if (newfd < 0 || newfd >= MAX_FDS_PER_TASK)
+        return -1;
+
+    /* Close newfd if open */
+    if (fdt->fds[newfd])
+        fd_close(fdt, newfd);
+
+    /* Duplicate */
+    fdt->fds[newfd] = fdt->fds[oldfd];
+    fdt->fds[newfd]->ref_count++;
+
+    return newfd;
 }

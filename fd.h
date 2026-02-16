@@ -18,11 +18,23 @@
 #define FD_TYPE_NONE    0
 #define FD_TYPE_CONSOLE 1   /* UART stdin/stdout/stderr */
 #define FD_TYPE_FILE    2   /* FAT16 file (read-only for now) */
+#define FD_TYPE_PIPE    3   /* Pipe read or write end */
 
 /* Open flags */
 #define O_RDONLY  0
 #define O_WRONLY  1
 #define O_RDWR    2
+
+#define PIPE_BUF_SIZE 4096
+
+struct pipe {
+    uint8_t  buf[PIPE_BUF_SIZE];
+    uint32_t read_pos;
+    uint32_t write_pos;
+    uint32_t count;         /* bytes in buffer */
+    int      read_open;     /* read end still open? */
+    int      write_open;    /* write end still open? */
+};
 
 struct open_file {
     int      type;
@@ -34,6 +46,9 @@ struct open_file {
     uint32_t file_size;
     uint32_t position;     /* Current read offset */
     uint16_t current_cluster;
+
+    /* For FD_TYPE_PIPE */
+    struct pipe *pipe;
 };
 
 /* Per-process fd table */
@@ -80,5 +95,17 @@ int fd_read(struct fd_table *fdt, int fd, void *buf, uint32_t count);
  * For files: not supported yet (returns -1).
  */
 int fd_write(struct fd_table *fdt, int fd, const void *buf, uint32_t count);
+
+/*
+ * Create a pipe. Returns 0 on success, -1 on error.
+ * fds[0] = read end, fds[1] = write end.
+ */
+int fd_pipe(struct fd_table *fdt, int fds[2]);
+
+/*
+ * Duplicate oldfd onto newfd. If newfd is open, close it first.
+ * Returns newfd on success, -1 on error.
+ */
+int fd_dup2(struct fd_table *fdt, int oldfd, int newfd);
 
 #endif
