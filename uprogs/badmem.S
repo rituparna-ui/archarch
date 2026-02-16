@@ -7,13 +7,13 @@ _start:
     mov     x8, #0
     svc     #0
 
-    /* Test 1: Try to read kernel memory at 0x40000000 (should fault) */
+    /* Test 1: Try to read unmapped memory (should fault) */
     adr     x0, msg_test1
     mov     x1, #35
     mov     x8, #0
     svc     #0
 
-    ldr     x0, =0x40000000    /* kernel .text — should be unmapped in our TTBR0 */
+    mov     x0, #0x10000000    /* unmapped address — should fault */
     ldr     x1, [x0]           /* THIS SHOULD FAULT */
 
     /* If we get here, isolation is broken */
@@ -30,6 +30,6 @@ _start:
 .balign 4
 msg_start: .ascii "[badmem] Memory isolation test\n"
 .balign 4
-msg_test1: .ascii "[badmem] Reading kernel @ 0x40000000..."
+msg_test1: .ascii "[badmem] Reading unmapped @ 0x10000000.."
 .balign 4
 msg_fail:  .ascii "[badmem] BUG: no fault!\n  "

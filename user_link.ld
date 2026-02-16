@@ -1,9 +1,9 @@
 /* Linker script for standalone user programs.
- * Produces a flat binary that can be loaded at any address.
- * Entry point is at offset 0. */
+ * All user programs are loaded at VA 0x00400000.
+ * Entry point is _start at the beginning of .text. */
 ENTRY(_start)
 SECTIONS {
-    . = 0;
+    . = 0x00400000;
     .text : { *(.text*) }
     .rodata : { *(.rodata*) }
     .data : { *(.data*) }

@@ -119,19 +119,15 @@ void mmu_init(void) {
 }
 
 /*
- * Create an ISOLATED per-process user page table.
+ * Create an ISOLATED per-process user page table with proper VAs.
  *
- * Maps ONLY:
- *   - User code pages at their PA (AP=01, EL0 RW)
- *   - User stack pages at their PA (AP=01, EL0 RW)
- *   - Guard page below stack: UNMAPPED (triggers data abort on overflow)
+ * Every process gets the same virtual address layout:
+ *   VA 0x00400000+  → code (mapped to code_pa)
+ *   VA 0x007FC000+  → stack (mapped to stack_pa, 4 pages)
+ *   VA 0x007FB000   → guard page (unmapped)
  *
- * Does NOT map:
- *   - Kernel memory
- *   - Other processes' memory
- *   - MMIO regions
- *
- * The kernel is accessible via TTBR1 when at EL1.
+ * Kernel RAM is identity-mapped with AP=00 (EL1 only) so the
+ * kernel can execute while this TTBR0 is active.
  */
 uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
                                 uintptr_t stack_pa, uint32_t stack_pages) {
@@ -140,97 +136,106 @@ uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
     uint64_t *l1 = (uint64_t *)l1_pa;
     zero_table(l1);
 
-    /*
-     * Start with kernel L1 entries (MMIO, PCI, etc.) so the kernel
-     * can execute while TTBR0 is set to this table. All kernel entries
-     * have AP=00 (EL1 only) — user code cannot access them.
-     */
+    /* Copy kernel L1 entries for EL1 access (MMIO, PCI, etc.) */
     for (int i = 0; i < PT_ENTRIES; i++)
         l1[i] = kern_l1[i];
 
-    /*
-     * For L1[1] (RAM region), create our own L2 table.
-     * Start with all entries INVALID (unmapped) — this is the isolation.
-     * Then selectively map only this process's code and stack pages.
-     * Kernel code pages in the same 2MB blocks get AP=00 (EL1 only).
-     */
-    uintptr_t l2_pa = pmm_alloc_page();
-    if (!l2_pa) { pmm_free_page(l1_pa); return 0; }
-    uint64_t *l2 = (uint64_t *)l2_pa;
-    zero_table(l2);  /* All RAM unmapped by default for user */
-
-    l1[1] = l2_pa | PTE_VALID | PTE_TABLE;
+    /* L1[1] = kernel RAM identity map (AP=00, EL1 only) */
+    uintptr_t l2_ram_pa = pmm_alloc_page();
+    if (!l2_ram_pa) { pmm_free_page(l1_pa); return 0; }
+    uint64_t *l2_ram = (uint64_t *)l2_ram_pa;
+    for (int i = 0; i < PT_ENTRIES; i++)
+        l2_ram[i] = kern_l2_ram[i];
+    l1[1] = l2_ram_pa | PTE_VALID | PTE_TABLE;
 
     /*
-     * Copy kernel RAM L2 entries so kernel code is accessible at EL1.
-     * These are 2MB blocks with AP=00 — user (EL0) cannot access them.
-     * This ensures the kernel can execute while this TTBR0 is active.
+     * L1[0] covers VA 0x00000000-0x3FFFFFFF.
+     * User code is at VA 0x00400000 → L1[0], L2 index 2 (0x400000 >> 21 = 2).
+     * User stack is at VA 0x007FC000 → L1[0], L2 index 3 (0x600000 >> 21 = 3).
+     * We need our own L2 table for L1[0].
      */
-    for (int i = 0; i < 64; i++)
-        l2[i] = kern_l2_ram[i];
+    uintptr_t l2_user_pa = pmm_alloc_page();
+    if (!l2_user_pa) return 0;
+    uint64_t *l2_user = (uint64_t *)l2_user_pa;
+    /* Start with kernel MMIO entries so UART etc. work at EL1 */
+    for (int i = 0; i < PT_ENTRIES; i++)
+        l2_user[i] = kern_l2_mmio[i];
 
-    /* Map user code and stack pages — split relevant 2MB blocks into L3 */
-    for (int pass = 0; pass < 2; pass++) {
-        uintptr_t base = (pass == 0) ? code_pa : stack_pa;
-        uint32_t npages = (pass == 0) ? code_pages : stack_pages;
+    l1[0] = l2_user_pa | PTE_VALID | PTE_TABLE;
 
-        for (uint32_t p = 0; p < npages; p++) {
-            uintptr_t pa = base + p * PAGE_SIZE;
-            uint32_t offset = (uint32_t)(pa - 0x40000000UL);
-            int l2_idx = (offset >> 21) & 0x1FF;
-            int l3_idx = (offset >> 12) & 0x1FF;
+    /*
+     * Map user code: VA 0x00400000+ → code_pa
+     * L2 index for 0x00400000 = (0x400000 >> 21) = 2
+     */
+    {
+        int l2_idx = (USER_VA_CODE >> 21) & 0x1FF;
 
-            /* Allocate L3 table if this 2MB slot doesn't have one yet.
-             * We're splitting a 2MB kernel block into 512 4KB pages.
-             * All pages start as AP=00 (kernel only), then we override
-             * specific pages with AP=01 for user access. */
-            if ((l2[l2_idx] & 0x3) != 0x3) {
-                /* It's a block entry or invalid — need to split */
-                uintptr_t l3_pa = pmm_alloc_page();
-                if (!l3_pa) return 0;
-                uint64_t *l3 = (uint64_t *)l3_pa;
+        uintptr_t l3_pa = pmm_alloc_page();
+        if (!l3_pa) return 0;
+        uint64_t *l3 = (uint64_t *)l3_pa;
+        zero_table(l3);
 
-                /* Fill with AP=00 kernel pages (matching the original block) */
-                uint64_t block_base = 0x40000000UL + ((uint64_t)l2_idx << 21);
-                for (int j = 0; j < PT_ENTRIES; j++) {
-                    uint64_t ppa = block_base + ((uint64_t)j << 12);
-                    l3[j] = ppa | PTE_VALID | PTE_PAGE | PTE_AF
-                           | PTE_ATTR_NORMAL | PTE_SH_INNER | PTE_AP_RW_EL1;
-                }
-                l2[l2_idx] = l3_pa | PTE_VALID | PTE_TABLE;
-            }
-
-            uint64_t *l3 = (uint64_t *)(l2[l2_idx] & ~0xFFFUL);
-
-            /* Map this page as EL0 accessible */
-            l3[l3_idx] = (pa & ~0xFFFUL) | PTE_VALID | PTE_PAGE | PTE_AF
-                       | PTE_ATTR_NORMAL | PTE_SH_INNER | PTE_AP_RW_ALL
-                       | PTE_PXN;  /* No EL1 execute — defense in depth */
+        for (uint32_t p = 0; p < code_pages; p++) {
+            int l3_idx = ((USER_VA_CODE >> 12) + p) & 0x1FF;
+            l3[l3_idx] = (code_pa + p * PAGE_SIZE) | PTE_VALID | PTE_PAGE
+                       | PTE_AF | PTE_ATTR_NORMAL | PTE_SH_INNER
+                       | PTE_AP_RW_ALL | PTE_PXN;
         }
+
+        l2_user[l2_idx] = l3_pa | PTE_VALID | PTE_TABLE;
     }
 
     /*
-     * Guard page: the page immediately below the stack base is
-     * intentionally left unmapped (zero entry in L3).
-     * If the user overflows the stack, they hit this unmapped page
-     * and get a clean data abort instead of corrupting memory.
+     * Map user stack: VA (USER_VA_STACK - stack_pages*4K) → stack_pa
+     * Stack grows down from USER_VA_STACK.
+     * Guard page is one page below the stack (unmapped).
      *
-     * stack_pa is the base of the stack allocation.
-     * The guard page is at stack_pa - PAGE_SIZE.
-     * Since we zero-initialized all L3 tables, it's already unmapped.
-     * Just log it for visibility.
+     * USER_VA_STACK = 0x00800000
+     * Stack pages at VA 0x007FC000..0x007FFFFF (4 pages)
+     * Guard at VA 0x007FB000 (unmapped)
+     *
+     * L2 index for 0x007FC000 = (0x600000 >> 21) = 3
+     * (0x007FC000 is in the 2MB block starting at 0x00600000)
+     * Actually: 0x007FC000 >> 21 = 3 (0x600000..0x7FFFFF)
      */
+    {
+        uintptr_t stack_va_base = USER_VA_STACK - stack_pages * PAGE_SIZE;
+        int l2_idx = (stack_va_base >> 21) & 0x1FF;
 
-    uart_puts("[MMU] User pgd: code=");
+        /* Check if we already have an L3 for this L2 slot */
+        uintptr_t l3_pa;
+        uint64_t *l3;
+        if ((l2_user[l2_idx] & 0x3) == 0x3) {
+            /* Already a table pointer (from code mapping) */
+            l3 = (uint64_t *)(l2_user[l2_idx] & ~0xFFFUL);
+        } else {
+            l3_pa = pmm_alloc_page();
+            if (!l3_pa) return 0;
+            l3 = (uint64_t *)l3_pa;
+            zero_table(l3);
+            l2_user[l2_idx] = l3_pa | PTE_VALID | PTE_TABLE;
+        }
+
+        for (uint32_t p = 0; p < stack_pages; p++) {
+            uintptr_t va = stack_va_base + p * PAGE_SIZE;
+            int l3_idx = (va >> 12) & 0x1FF;
+            l3[l3_idx] = (stack_pa + p * PAGE_SIZE) | PTE_VALID | PTE_PAGE
+                       | PTE_AF | PTE_ATTR_NORMAL | PTE_SH_INNER
+                       | PTE_AP_RW_ALL | PTE_PXN;
+        }
+        /* Guard page: l3 entry for (stack_va_base - PAGE_SIZE) stays zero (unmapped) */
+    }
+
+    uart_puts("[MMU] User pgd: code VA=");
+    uart_puthex(USER_VA_CODE);
+    uart_puts("->PA=");
     uart_puthex(code_pa);
-    uart_puts(" (");
-    uart_putdec(code_pages);
-    uart_puts("p), stack=");
+    uart_puts(" stack VA=");
+    uart_puthex(USER_VA_STACK - stack_pages * PAGE_SIZE);
+    uart_puts("->PA=");
     uart_puthex(stack_pa);
-    uart_puts(" (");
-    uart_putdec(stack_pages);
-    uart_puts("p), guard=");
-    uart_puthex(stack_pa - PAGE_SIZE);
+    uart_puts(" guard VA=");
+    uart_puthex(USER_VA_STACK - (stack_pages + 1) * PAGE_SIZE);
     uart_puts("\n");
 
     return l1_pa;
@@ -242,6 +247,10 @@ void mmu_switch_ttbr0(uintptr_t pgd) {
 
     __asm__ volatile(
         "msr ttbr0_el1, %0\n"
+        "isb\n"
+        /* Flush TLB for TTBR0 address space */
+        "tlbi aside1, xzr\n"
+        "dsb sy\n"
         "isb\n"
         : : "r"(pgd)
     );

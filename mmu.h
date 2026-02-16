@@ -48,6 +48,12 @@
 /* Block entry flag (for L1/L2 block mappings) — bit 1 is 0 */
 #define PTE_BLOCK       (0UL << 1)
 
+/* User virtual address layout — same for every process */
+#define USER_VA_CODE    0x00400000UL   /* User code starts here */
+#define USER_VA_STACK   0x00800000UL   /* User stack top (grows down) */
+#define USER_STACK_PAGES 4             /* 16KB stack */
+#define USER_VA_GUARD   (USER_VA_STACK - (USER_STACK_PAGES + 1) * PAGE_SIZE)
+
 /*
  * Initialize page tables and enable the MMU.
  * Must be called after pmm_init().

@@ -187,8 +187,8 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
     t->name  = name;
     t->ticks = 0;
     t->is_user = 1;
-    t->user_entry = code_base;
-    t->user_sp = ustack_top;
+    t->user_entry = USER_VA_CODE;  /* Virtual address — same for all processes */
+    t->user_sp = USER_VA_STACK;    /* Stack top VA — same for all processes */
     t->ttbr0 = pgd;
     t->wait_for_tid = -1;
 
