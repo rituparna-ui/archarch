@@ -68,6 +68,7 @@ void sched_init(void) {
         tasks[i].state = TASK_UNUSED;
         tasks[i].id = i;
         tasks[i].ticks = 0;
+        tasks[i].wait_for_tid = -1;
     }
 
     tasks[0].state = TASK_RUNNING;
@@ -94,6 +95,7 @@ int sched_create(const char *name, void (*entry)(void *), void *arg) {
     t->user_entry = 0;
     t->user_sp = 0;
     t->ttbr0 = 0;
+    t->wait_for_tid = -1;
 
     start_info[id].entry = entry;
     start_info[id].arg   = arg;
@@ -184,6 +186,7 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
     t->user_entry = code_base;
     t->user_sp = ustack_top;
     t->ttbr0 = pgd;
+    t->wait_for_tid = -1;
 
     /* Kernel stack — used when this task traps to EL1 */
     uint8_t *kstack_top = &task_stacks[id][SCHED_STACK_SIZE];
@@ -280,14 +283,42 @@ void sched_tick(void) {
 }
 
 void sched_exit(void) {
+    int me = current_task;
+
     uart_puts("[SCHED] Task ");
-    uart_putdec((uint64_t)current_task);
+    uart_putdec((uint64_t)me);
     uart_puts(" (\"");
-    uart_puts(tasks[current_task].name);
+    uart_puts(tasks[me].name);
     uart_puts("\") finished\n");
 
-    tasks[current_task].state = TASK_FINISHED;
+    tasks[me].state = TASK_FINISHED;
+
+    /* Wake any task that was waiting on us */
+    for (int i = 0; i < num_tasks; i++) {
+        if (tasks[i].state == TASK_BLOCKED && tasks[i].wait_for_tid == me) {
+            tasks[i].state = TASK_READY;
+            tasks[i].wait_for_tid = -1;
+        }
+    }
+
     sched_yield();
+}
+
+int sched_wait(int tid) {
+    if (tid < 0 || tid >= num_tasks)
+        return -1;
+
+    /* Already finished? */
+    if (tasks[tid].state == TASK_FINISHED)
+        return 0;
+
+    /* Block until the target finishes */
+    tasks[current_task].state = TASK_BLOCKED;
+    tasks[current_task].wait_for_tid = tid;
+    sched_yield();
+
+    /* We've been woken up — target is finished */
+    return 0;
 }
 
 int sched_current_id(void) {

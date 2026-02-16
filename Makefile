@@ -13,7 +13,10 @@ OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o \
        user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o fat16.o
 
 # User programs to put on the FAT16 disk
-UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin
+UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin uprogs/shell.bin
+
+# User program C flags
+UCFLAGS = -ffreestanding -nostdlib -nostartfiles -O2 -march=armv8-a -mstrict-align -I uprogs
 
 all: kernel.elf kernel.bin
 
@@ -44,11 +47,19 @@ user_prog3.o: user_prog3.S
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Build standalone user programs as flat binaries
+# Build standalone user programs (assembly) as flat binaries
 uprogs/%.bin: uprogs/%.S user_link.ld
 	$(AS) -o uprogs/$*.o $<
 	$(LD) -nostdlib -T user_link.ld -o uprogs/$*.elf uprogs/$*.o
 	$(OBJCOPY) -O binary uprogs/$*.elf $@
+	@echo "  UPROG $@ ($$(stat -c%s $@) bytes)"
+
+# Build C user programs (crt0.S + .c) as flat binaries
+uprogs/shell.bin: uprogs/shell.c uprogs/crt0.S uprogs/usys.h user_link.ld
+	$(AS) -o uprogs/crt0.o uprogs/crt0.S
+	$(CC) $(UCFLAGS) -c -o uprogs/shell.o uprogs/shell.c
+	$(LD) -nostdlib -T user_link.ld -o uprogs/shell.elf uprogs/crt0.o uprogs/shell.o
+	$(OBJCOPY) -O binary uprogs/shell.elf $@
 	@echo "  UPROG $@ ($$(stat -c%s $@) bytes)"
 
 # Create FAT16 disk image with user programs

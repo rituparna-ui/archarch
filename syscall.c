@@ -9,6 +9,7 @@
 #include "pmm.h"
 #include "fat16.h"
 #include "kmalloc.h"
+#include "virtio_blk.h"
 
 /* Global filesystem — set by kernel_main after mounting */
 extern struct fat16_fs root_fs;
@@ -62,6 +63,88 @@ void syscall_handler(uint64_t *regs) {
         if (pages == 0) pages = 1;
         uintptr_t addr = pmm_alloc_pages((uint32_t)pages);
         regs[0] = addr ? addr : (uint64_t)-1;
+        break;
+    }
+
+    case SYS_READ: {
+        /* read(buf, maxlen) — read line from UART with echo */
+        char *buf = (char *)arg0;
+        uint64_t maxlen = arg1;
+        uint64_t i = 0;
+        while (i < maxlen - 1) {
+            int c = uart_getc();
+            if (c == '\r' || c == '\n') {
+                uart_putc('\r');
+                uart_putc('\n');
+                break;
+            }
+            if (c == 127 || c == 8) {  /* backspace/delete */
+                if (i > 0) {
+                    i--;
+                    uart_putc('\b');
+                    uart_putc(' ');
+                    uart_putc('\b');
+                }
+                continue;
+            }
+            if (c >= 32 && c < 127) {
+                buf[i++] = (char)c;
+                uart_putc((char)c);  /* echo */
+            }
+        }
+        buf[i] = '\0';
+        regs[0] = i;
+        break;
+    }
+
+    case SYS_WAIT: {
+        /* wait(tid) — block until child finishes */
+        int tid = (int)arg0;
+        int ret = sched_wait(tid);
+        regs[0] = (uint64_t)ret;
+        break;
+    }
+
+    case SYS_LISTDIR: {
+        /* listdir(buf, buflen) — write "name1\nname2\n..." into buf */
+        char *buf = (char *)arg0;
+        uint32_t buflen = (uint32_t)arg1;
+        uint32_t pos = 0;
+
+        /* Iterate root directory manually */
+        struct fat16_file dummy;
+        /* Use a simple approach: list via callback that writes to buf */
+        /* We'll just iterate the root dir entries directly */
+        struct fat16_bpb *bpb = &root_fs.bpb;
+        static uint8_t dir_sector[512] __attribute__((aligned(512)));
+
+        for (uint32_t s = 0; s < bpb->root_dir_sectors && pos < buflen - 1; s++) {
+            if (virtio_blk_read(root_fs.blk, bpb->root_dir_sector + s, 1, dir_sector) < 0)
+                break;
+            struct fat16_dirent *entries = (struct fat16_dirent *)dir_sector;
+            for (int j = 0; j < 16 && pos < buflen - 1; j++) {
+                struct fat16_dirent *de = &entries[j];
+                if (de->name[0] == 0x00) goto listdir_done;
+                if ((uint8_t)de->name[0] == 0xE5) continue;
+                if (de->attr & 0x1E) continue;  /* skip LFN/vol/dir/system */
+
+                /* Copy name (trim spaces) */
+                for (int k = 0; k < 8 && pos < buflen - 1; k++) {
+                    if (de->name[k] != ' ') buf[pos++] = de->name[k];
+                }
+                if (de->ext[0] != ' ' && pos < buflen - 1) {
+                    buf[pos++] = '.';
+                    for (int k = 0; k < 3 && pos < buflen - 1; k++) {
+                        if (de->ext[k] != ' ') buf[pos++] = de->ext[k];
+                    }
+                }
+                if (pos < buflen - 1) buf[pos++] = '\n';
+            }
+        }
+listdir_done:
+        buf[pos] = '\0';
+        regs[0] = pos;
+        (void)dummy;
         break;
     }
 

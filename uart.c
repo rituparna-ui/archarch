@@ -8,6 +8,7 @@
 #define UART_DR     (UART0_BASE + 0x00)
 #define UART_FR     (UART0_BASE + 0x18)
 #define UART_FR_TXFF (1 << 5)
+#define UART_FR_RXFE (1 << 4)  /* RX FIFO empty */
 
 void uart_init(void) {
     /* QEMU PL011 works out of the box, no init needed */
@@ -17,6 +18,13 @@ void uart_putc(char c) {
     while (mmio_read32(UART_FR) & UART_FR_TXFF)
         ;
     mmio_write32(UART_DR, (uint32_t)c);
+}
+
+int uart_getc(void) {
+    /* Busy-wait until a character is available */
+    while (mmio_read32(UART_FR) & UART_FR_RXFE)
+        ;
+    return (int)(mmio_read32(UART_DR) & 0xFF);
 }
 
 void uart_puts(const char *s) {

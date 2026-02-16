@@ -18,7 +18,10 @@
 #define SYS_EXIT    2   /* exit(code) → does not return */
 #define SYS_YIELD   3   /* yield() → 0 */
 #define SYS_SBRK    4   /* sbrk(increment) → old break, or -1 */
-#define SYS_EXEC    5   /* exec(filename, len) → does not return on success, -1 on error */
+#define SYS_EXEC    5   /* exec(filename, len) → child tid, or -1 */
+#define SYS_READ    6   /* read(buf, maxlen) → bytes read */
+#define SYS_WAIT    7   /* wait(tid) → exit code of child, blocks until done */
+#define SYS_LISTDIR 8   /* listdir(buf, buflen) → bytes written to buf */
 
 /*
  * Called from the synchronous exception vector when ESR_EL1

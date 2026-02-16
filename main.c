@@ -803,7 +803,7 @@ static void list_callback(const char *name, uint32_t size) {
 }
 
 static void demo_filesystem(void) {
-    uart_puts("--- filesystem + preemptive scheduling demo ---\n\n");
+    uart_puts("--- booting VirtIO-OS ---\n\n");
 
     /* Init block device */
     if (virtio_blk_init(&blk_dev) < 0) {
@@ -824,44 +824,44 @@ static void demo_filesystem(void) {
     uart_putdec((uint64_t)nfiles);
     uart_puts(" file(s) found\n\n");
 
-    if (nfiles == 0) {
-        uart_puts("[FS] No files to run\n\n");
-        return;
-    }
-
     /* Start preemptive timer — 50ms time slice */
-    timer_init(1000);
+    timer_init(50);
     irq_register_timer();
     uart_puts("\n");
 
-    /* Initialize scheduler and load programs from disk */
+    /* Initialize scheduler */
     sched_init();
 
-    /* Load all .bin programs found on disk */
+    /* Load shell from disk */
     struct fat16_file file;
-    const char *programs[] = {"hello.bin", "fib.bin", "spin.bin", NULL};
-
-    for (int i = 0; programs[i]; i++) {
-        if (fat16_open(&root_fs, programs[i], &file) == 0) {
-            void *code = kmalloc(file.file_size);
-            if (code) {
-                int bytes = fat16_read_file(&root_fs, &file, code, file.file_size);
-                if (bytes > 0) {
-                    uart_puts("[FS] Loaded ");
-                    uart_puts(programs[i]);
-                    uart_puts(" (");
-                    uart_putdec((uint64_t)bytes);
-                    uart_puts(" bytes)\n");
-                    sched_create_user(programs[i], code, (uint32_t)bytes);
-                }
-                kfree(code);
-            }
-        }
+    if (fat16_open(&root_fs, "shell.bin", &file) < 0) {
+        uart_puts("[BOOT] shell.bin not found on disk!\n");
+        return;
     }
 
-    uart_puts("\n[FS] Running programs with preemptive scheduling (50ms slice)...\n\n");
+    void *code = kmalloc(file.file_size);
+    if (!code) {
+        uart_puts("[BOOT] Cannot allocate memory for shell\n");
+        return;
+    }
 
-    /* Run all tasks — timer preemption handles switching */
+    int bytes = fat16_read_file(&root_fs, &file, code, file.file_size);
+    if (bytes <= 0) {
+        uart_puts("[BOOT] Cannot read shell.bin\n");
+        kfree(code);
+        return;
+    }
+
+    uart_puts("[BOOT] Loaded shell.bin (");
+    uart_putdec((uint64_t)bytes);
+    uart_puts(" bytes)\n");
+
+    sched_create_user("shell", code, (uint32_t)bytes);
+    kfree(code);
+
+    uart_puts("[BOOT] Starting shell...\n");
+
+    /* Run until shell exits */
     while (1) {
         int any_alive = 0;
         for (int i = 1; i < sched_task_count(); i++) {
@@ -873,24 +873,8 @@ static void demo_filesystem(void) {
         sched_yield();
     }
 
-    /* Stop timer */
     timer_disable();
-
-    /* Print task stats */
-    uart_puts("\n[FS] All programs finished! Task stats:\n");
-    for (int i = 1; i < sched_task_count(); i++) {
-        struct task *t = sched_get_task(i);
-        if (t) {
-            uart_puts("  Task ");
-            uart_putdec((uint64_t)i);
-            uart_puts(" (\"");
-            uart_puts(t->name);
-            uart_puts("\"): ");
-            uart_putdec(t->ticks);
-            uart_puts(" timer ticks\n");
-        }
-    }
-    uart_puts("\n");
+    uart_puts("\n[BOOT] Shell exited.\n");
 }
 
 

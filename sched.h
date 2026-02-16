@@ -49,6 +49,7 @@ struct task {
     uintptr_t           user_entry;  /* EL0 entry point */
     uintptr_t           user_sp;     /* EL0 stack pointer */
     uintptr_t           ttbr0;       /* Per-process page table (0 = kernel) */
+    int                 wait_for_tid; /* tid this task is waiting on (-1 = none) */
 };
 
 /*
@@ -94,6 +95,12 @@ uint64_t *sched_pick_next_sp_ptr(void);
  * Mark the current task as finished and switch away.
  */
 void sched_exit(void);
+
+/*
+ * Block current task until task `tid` finishes.
+ * Returns 0 on success, -1 if tid is invalid.
+ */
+int sched_wait(int tid);
 
 /*
  * Get the current task ID.
