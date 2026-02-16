@@ -13,7 +13,7 @@ OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o \
        user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o fat16.o
 
 # User programs to put on the FAT16 disk
-UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin uprogs/shell.bin
+UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin uprogs/shell.bin uprogs/badmem.bin uprogs/stksmash.bin
 
 # User program C flags
 UCFLAGS = -ffreestanding -nostdlib -nostartfiles -O2 -march=armv8-a -mstrict-align -I uprogs

@@ -169,18 +169,45 @@ void unhandled_sync_el0(void) {
     __asm__ volatile("mrs %0, elr_el1"  : "=r"(elr));
     __asm__ volatile("mrs %0, far_el1"  : "=r"(far));
 
-    uart_puts("\n[FAULT] Unhandled sync exception from EL0!\n");
-    uart_puts("  ESR_EL1 = "); uart_puthex(esr); uart_puts("\n");
-    uart_puts("  ELR_EL1 = "); uart_puthex(elr); uart_puts("\n");
-    uart_puts("  FAR_EL1 = "); uart_puthex(far); uart_puts("\n");
-
     uint64_t ec = (esr >> 26) & 0x3F;
-    uart_puts("  EC = "); uart_puthex(ec);
-    if (ec == 0x20 || ec == 0x21)
-        uart_puts(" (Instruction abort)");
-    else if (ec == 0x24 || ec == 0x25)
-        uart_puts(" (Data abort)");
-    else if (ec == 0x15)
-        uart_puts(" (SVC)");
+
+    uart_puts("\n[FAULT] Task ");
+    uart_putdec((uint64_t)sched_current_id());
+    uart_puts(" killed: ");
+
+    if (ec == 0x20 || ec == 0x21) {
+        uart_puts("instruction abort at ");
+        uart_puthex(far);
+        uart_puts("\n");
+    } else if (ec == 0x24 || ec == 0x25) {
+        uint64_t dfsc = esr & 0x3F;
+        if (dfsc >= 0x04 && dfsc <= 0x07) {
+            uart_puts("SEGFAULT (translation fault) accessing ");
+        } else if (dfsc >= 0x0C && dfsc <= 0x0F) {
+            uart_puts("SEGFAULT (permission fault) accessing ");
+        } else {
+            uart_puts("data abort accessing ");
+        }
+        uart_puthex(far);
+        uart_puts(" at PC ");
+        uart_puthex(elr);
+        uart_puts("\n");
+    } else {
+        uart_puts("unhandled exception EC=");
+        uart_puthex(ec);
+        uart_puts(" at PC ");
+        uart_puthex(elr);
+        uart_puts("\n");
+    }
+
+    uart_puts("  ESR=");
+    uart_puthex(esr);
+    uart_puts(" ELR=");
+    uart_puthex(elr);
+    uart_puts(" FAR=");
+    uart_puthex(far);
     uart_puts("\n");
+
+    /* Kill the faulting task */
+    sched_exit();
 }

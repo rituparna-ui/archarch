@@ -153,6 +153,8 @@ sync_el0_entry:
     eret
 
 sync_el0_not_svc:
-    /* Not an SVC — print info and hang */
+    /* Not an SVC — fault handler will kill the task via sched_exit.
+     * sched_exit does context_switch and never returns here. */
     bl      unhandled_sync_el0
+    /* If we somehow get here, just spin */
     b       .

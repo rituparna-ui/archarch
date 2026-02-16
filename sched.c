@@ -157,22 +157,26 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
         __asm__ volatile("ic ivau, %0" : : "r"(code_base + i));
     __asm__ volatile("dsb ish\n isb\n");
 
-    /* Allocate user stack */
-    uintptr_t ustack_base = pmm_alloc_pages(USER_STACK_PAGES);
-    if (!ustack_base) {
+    /* Allocate user stack with guard page.
+     * We allocate USER_STACK_PAGES + 1 pages, but only map the top
+     * USER_STACK_PAGES. The bottom page is the guard (unmapped). */
+    uintptr_t ustack_alloc = pmm_alloc_pages(USER_STACK_PAGES + 1);
+    if (!ustack_alloc) {
         uart_puts("[SCHED] Cannot allocate user stack\n");
         pmm_free_pages(code_base, code_pages);
         return -1;
     }
+    uintptr_t guard_page = ustack_alloc;
+    uintptr_t ustack_base = ustack_alloc + PAGE_SIZE;  /* skip guard */
     uintptr_t ustack_top = (ustack_base + USER_STACK_PAGES * PAGE_SIZE) & ~0xFUL;
 
-    /* Create per-process page table */
+    /* Create per-process page table — maps code + stack, guard is unmapped */
     uintptr_t pgd = mmu_create_user_pgd(code_base, code_pages,
                                          ustack_base, USER_STACK_PAGES);
     if (!pgd) {
         uart_puts("[SCHED] Cannot create user page table\n");
         pmm_free_pages(code_base, code_pages);
-        pmm_free_pages(ustack_base, USER_STACK_PAGES);
+        pmm_free_pages(ustack_alloc, USER_STACK_PAGES + 1);
         return -1;
     }
 

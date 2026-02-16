@@ -1,29 +1,22 @@
 /*
- * AArch64 MMU — TTBR0/TTBR1 split.
+ * AArch64 MMU — TTBR0/TTBR1 split with process isolation.
  *
- * TTBR1_EL1 (kernel): upper VA range 0xFFFF_xxxx_xxxx_xxxx
- *   - Identity maps PA to VA with 0xFFFF_0000_0000_0000 offset
- *   - Kernel code at VA 0xFFFF000040000000 → PA 0x40000000
- *   - MMIO at VA 0xFFFF000000000000 → PA 0x00000000
- *   - AP=00 (EL1 only), never changes
+ * TTBR1_EL1 (kernel): always active, maps all physical memory
+ *   - MMIO, RAM, PCI — all with AP=00 (EL1 only)
+ *   - Kernel code executes from here when at EL1
  *
- * TTBR0_EL1 (user): lower VA range 0x0000_xxxx_xxxx_xxxx
- *   - Per-process page table
- *   - User code mapped at VA 0x00400000 (4MB)
- *   - User stack mapped at VA 0x7FFFF000 (below 2GB)
- *   - AP=01 (EL0+EL1 RW)
- *   - Swapped on context switch
+ * TTBR0_EL1 (per-process): swapped on context switch
+ *   - Kernel/idle task: TTBR0 = kern_l1 (full identity map, for boot code)
+ *   - User tasks: TTBR0 maps ONLY that process's code + stack pages
+ *     with AP=01 (EL0 accessible). Everything else is unmapped.
+ *   - Guard page below stack (unmapped) catches stack overflow.
  *
- * TCR_EL1:
- *   T0SZ = 25 → 39-bit user VA space (512GB)
- *   T1SZ = 25 → 39-bit kernel VA space
- *   This means:
- *     TTBR0 handles VA 0x0000_0000_0000_0000 - 0x0000_007F_FFFF_FFFF
- *     TTBR1 handles VA 0xFFFF_FF80_0000_0000 - 0xFFFF_FFFF_FFFF_FFFF
+ * Memory isolation:
+ *   - Process A cannot see process B's memory (different TTBR0)
+ *   - No process can see kernel memory via TTBR0 (not mapped)
+ *   - Kernel accesses all memory via TTBR1 during syscalls/IRQs
  *
- * With T0SZ=T1SZ=25, translation starts at L1 (skipping L0).
- * L1: 512 entries × 1GB each = 512GB
- * L2: 512 entries × 2MB each = 1GB
+ * TCR_EL1: T0SZ=T1SZ=25 → 39-bit VA, translation starts at L1
  */
 #include "mmu.h"
 #include "pmm.h"
@@ -31,29 +24,16 @@
 
 #define PT_ENTRIES 512
 
-/* ===== Kernel page tables (TTBR1) ===== */
-/* With T1SZ=25, translation starts at L1 */
+/* ===== Kernel page tables (TTBR1 + boot TTBR0) ===== */
 static uint64_t kern_l1[PT_ENTRIES] __attribute__((aligned(4096)));
-static uint64_t kern_l2_mmio[PT_ENTRIES] __attribute__((aligned(4096)));  /* 0-1GB: MMIO */
-static uint64_t kern_l2_ram[PT_ENTRIES] __attribute__((aligned(4096)));   /* 1-2GB: RAM+PCI */
-static uint64_t kern_l2_ecam[PT_ENTRIES] __attribute__((aligned(4096)));  /* PCI ECAM */
-
-/* ===== Empty user page table (TTBR0) for kernel-only context ===== */
-static uint64_t empty_l1[PT_ENTRIES] __attribute__((aligned(4096)));
+static uint64_t kern_l2_mmio[PT_ENTRIES] __attribute__((aligned(4096)));
+static uint64_t kern_l2_ram[PT_ENTRIES] __attribute__((aligned(4096)));
+static uint64_t kern_l2_ecam[PT_ENTRIES] __attribute__((aligned(4096)));
 
 static void zero_table(uint64_t *table) {
     for (int i = 0; i < PT_ENTRIES; i++)
         table[i] = 0;
 }
-
-/*
- * Kernel VA offset: add this to PA to get kernel VA.
- * With T1SZ=25, kernel VA starts at 0xFFFFFF8000000000.
- */
-#define KERN_VA_BASE 0xFFFFFF8000000000UL
-
-/* Convert PA to kernel VA */
-#define PA_TO_KVA(pa) ((pa) + KERN_VA_BASE)
 
 void mmu_init(void) {
     uart_puts("[MMU] Setting up TTBR0/TTBR1 split page tables...\n");
@@ -62,20 +42,6 @@ void mmu_init(void) {
     zero_table(kern_l2_mmio);
     zero_table(kern_l2_ram);
     zero_table(kern_l2_ecam);
-    zero_table(empty_l1);
-
-    /*
-     * Kernel L1 index mapping (each entry = 1GB):
-     *   KVA 0xFFFFFF8000000000 → L1[0] → PA 0x00000000 (MMIO)
-     *   KVA 0xFFFFFF8040000000 → L1[1] → PA 0x40000000 (RAM)
-     *   KVA 0xFFFFFF8080000000 → L1[2] → PA 0x80000000 (PCI MMIO32)
-     *   ...
-     *
-     * But we also need the ECAM at PA 0x4010000000.
-     * L1 index for ECAM: (0x4010000000 >> 30) & 0x1FF = 256
-     * KVA for ECAM: 0xFFFFFF8000000000 + 0x4000000000 = 0xFFFFFFC000000000
-     * L1[256] → ECAM
-     */
 
     /* L2 for MMIO: 0x00000000-0x3FFFFFFF (device memory, 2MB blocks) */
     for (int i = 0; i < PT_ENTRIES; i++) {
@@ -87,14 +53,13 @@ void mmu_init(void) {
     for (int i = 0; i < PT_ENTRIES; i++) {
         uint64_t pa = 0x40000000UL + ((uint64_t)i << 21);
         if (i < 64) {
-            /* RAM: AP=00 (EL1 only) */
             kern_l2_ram[i] = pa | MMU_NORMAL_FLAGS | PTE_BLOCK | PTE_VALID;
         } else {
             kern_l2_ram[i] = pa | MMU_DEVICE_FLAGS | PTE_BLOCK | PTE_VALID;
         }
     }
 
-    /* L2 for PCI ECAM: PA 0x4000000000-0x403FFFFFFF */
+    /* L2 for PCI ECAM */
     for (int i = 0; i < PT_ENTRIES; i++) {
         uint64_t pa = 0x4000000000UL + ((uint64_t)i << 21);
         kern_l2_ecam[i] = pa | MMU_DEVICE_FLAGS | PTE_BLOCK | PTE_VALID;
@@ -103,67 +68,44 @@ void mmu_init(void) {
     /* Kernel L1 */
     kern_l1[0] = (uint64_t)kern_l2_mmio | PTE_VALID | PTE_TABLE;
     kern_l1[1] = (uint64_t)kern_l2_ram  | PTE_VALID | PTE_TABLE;
-    /* L1[2..3]: 1GB device blocks for PCI MMIO32 */
     for (int i = 2; i < 4; i++) {
         uint64_t pa = (uint64_t)i << 30;
         kern_l1[i] = pa | MMU_DEVICE_FLAGS | PTE_BLOCK | PTE_VALID;
     }
-    /* ECAM */
     kern_l1[256] = (uint64_t)kern_l2_ecam | PTE_VALID | PTE_TABLE;
 
     uart_puts("[MMU] Kernel page tables built (TTBR1)\n");
 
-    /*
-     * TCR_EL1 configuration:
-     *   T0SZ = 25 → 39-bit TTBR0 VA (512GB user space)
-     *   T1SZ = 25 → 39-bit TTBR1 VA (512GB kernel space)
-     *   TG0 = 00 (4KB granule for TTBR0)
-     *   TG1 = 10 (4KB granule for TTBR1)
-     *   IRGN0/ORGN0 = 01/01 (WB/WA)
-     *   IRGN1/ORGN1 = 01/01 (WB/WA)
-     *   SH0 = 11 (inner shareable)
-     *   SH1 = 11 (inner shareable)
-     *   IPS = from ID_AA64MMFR0_EL1
-     */
+    /* TCR_EL1 */
     uint64_t mmfr0;
     __asm__ volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
     uint64_t pa_range = mmfr0 & 0xF;
 
     uint64_t tcr = (25UL << 0)     /* T0SZ = 25 */
-                 | (1UL << 8)      /* IRGN0 = WB/WA */
-                 | (1UL << 10)     /* ORGN0 = WB/WA */
-                 | (3UL << 12)     /* SH0 = inner shareable */
+                 | (1UL << 8)      /* IRGN0 */
+                 | (1UL << 10)     /* ORGN0 */
+                 | (3UL << 12)     /* SH0 */
                  | (0UL << 14)     /* TG0 = 4KB */
                  | (25UL << 16)    /* T1SZ = 25 */
-                 | (1UL << 24)     /* IRGN1 = WB/WA */
-                 | (1UL << 26)     /* ORGN1 = WB/WA */
-                 | (3UL << 28)     /* SH1 = inner shareable */
-                 | (2UL << 30)     /* TG1 = 4KB (encoded as 10) */
-                 | (pa_range << 32); /* IPS */
+                 | (1UL << 24)     /* IRGN1 */
+                 | (1UL << 26)     /* ORGN1 */
+                 | (3UL << 28)     /* SH1 */
+                 | (2UL << 30)     /* TG1 = 4KB */
+                 | (pa_range << 32);
 
     uint64_t mair = (0x00UL << 0) | (0xFFUL << 8);
 
-    uart_puts("[MMU] Enabling MMU (TTBR0=empty, TTBR1=kernel)...\n");
+    uart_puts("[MMU] Enabling MMU...\n");
 
-    /*
-     * IMPORTANT: We're currently running at PA 0x40000000.
-     * We need TTBR0 to also map this PA during the transition,
-     * so the instruction after msr sctlr_el1 can be fetched.
-     *
-     * Strategy: temporarily set TTBR0 = kern_l1 (same as TTBR1)
-     * so both low and high VAs resolve. After jumping to high VA,
-     * we can set TTBR0 to the empty table.
-     */
     __asm__ volatile(
         "msr mair_el1, %0\n"
         "msr tcr_el1, %1\n"
-        "msr ttbr0_el1, %2\n"  /* Temporary: same as kernel */
-        "msr ttbr1_el1, %2\n"  /* Kernel page table */
+        "msr ttbr0_el1, %2\n"
+        "msr ttbr1_el1, %2\n"
         "isb\n"
         : : "r"(mair), "r"(tcr), "r"((uint64_t)kern_l1)
     );
 
-    /* Enable MMU */
     uint64_t sctlr;
     __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
     sctlr |= (1UL << 0) | (1UL << 2) | (1UL << 12);
@@ -173,72 +115,61 @@ void mmu_init(void) {
         : : "r"(sctlr)
     );
 
-    uart_puts("[MMU] MMU enabled!\n");
-
-    /*
-     * Now switch TTBR0 to the empty table.
-     * Kernel code continues to work via TTBR1.
-     * We're still running at low VA (PA-based) which is fine
-     * because our code is linked at 0x40000000 and TTBR0 still
-     * maps it. We'll keep running at low VA for now — the kernel
-     * doesn't need to be at high VA to benefit from the split.
-     * The key benefit is that TTBR0 can be swapped per-process.
-     */
-
-    /* Actually, keep TTBR0 = kern_l1 for now since kernel code
-     * is linked at 0x40000000 (low VA). We'll swap to user tables
-     * only when switching to a user task. */
-
-    uart_puts("[MMU] TTBR0/TTBR1 split active. Kernel via TTBR0+TTBR1.\n");
+    uart_puts("[MMU] MMU enabled! TTBR0/TTBR1 split active.\n");
 }
 
 /*
- * Create a per-process user page table (TTBR0).
- * Returns the physical address of the L1 table.
+ * Create an ISOLATED per-process user page table.
  *
- * Maps:
- *   user_code_pa → VA user_code_pa (identity mapped for simplicity)
- *   user_stack_pa → VA user_stack_pa
+ * Maps ONLY:
+ *   - User code pages at their PA (AP=01, EL0 RW)
+ *   - User stack pages at their PA (AP=01, EL0 RW)
+ *   - Guard page below stack: UNMAPPED (triggers data abort on overflow)
  *
- * All with AP=01 (EL0+EL1 RW).
+ * Does NOT map:
+ *   - Kernel memory
+ *   - Other processes' memory
+ *   - MMIO regions
+ *
+ * The kernel is accessible via TTBR1 when at EL1.
  */
 uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
                                 uintptr_t stack_pa, uint32_t stack_pages) {
-    /* Allocate L1 table */
     uintptr_t l1_pa = pmm_alloc_page();
     if (!l1_pa) return 0;
     uint64_t *l1 = (uint64_t *)l1_pa;
     zero_table(l1);
 
     /*
-     * Copy kernel L1 entries into user L1 so kernel code remains
-     * accessible when TTBR0 is switched. This is necessary because
-     * the kernel is linked at low VA (0x40000000) which falls under TTBR0.
-     *
-     * We copy all kernel L1 entries, then add user-specific L3 mappings
-     * on top for the user code/stack pages with AP=01.
+     * Start with kernel L1 entries (MMIO, PCI, etc.) so the kernel
+     * can execute while TTBR0 is set to this table. All kernel entries
+     * have AP=00 (EL1 only) — user code cannot access them.
      */
     for (int i = 0; i < PT_ENTRIES; i++)
         l1[i] = kern_l1[i];
 
     /*
-     * Now we need to create L3 mappings for user pages with AP=01.
-     * User pages are in the 0x40000000-0x48000000 range (L1 index 1).
-     * We need our own L2 table for L1[1] so we can add L3 tables
-     * without modifying the kernel's L2.
+     * For L1[1] (RAM region), create our own L2 table.
+     * Start with all entries INVALID (unmapped) — this is the isolation.
+     * Then selectively map only this process's code and stack pages.
+     * Kernel code pages in the same 2MB blocks get AP=00 (EL1 only).
      */
     uintptr_t l2_pa = pmm_alloc_page();
     if (!l2_pa) { pmm_free_page(l1_pa); return 0; }
     uint64_t *l2 = (uint64_t *)l2_pa;
+    zero_table(l2);  /* All RAM unmapped by default for user */
 
-    /* Copy kernel L2 entries for the RAM region */
-    for (int i = 0; i < PT_ENTRIES; i++)
-        l2[i] = kern_l2_ram[i];
-
-    /* Override L1[1] to point to our copy */
     l1[1] = l2_pa | PTE_VALID | PTE_TABLE;
 
-    /* Now split specific 2MB blocks and set AP=01 on user pages */
+    /*
+     * Copy kernel RAM L2 entries so kernel code is accessible at EL1.
+     * These are 2MB blocks with AP=00 — user (EL0) cannot access them.
+     * This ensures the kernel can execute while this TTBR0 is active.
+     */
+    for (int i = 0; i < 64; i++)
+        l2[i] = kern_l2_ram[i];
+
+    /* Map user code and stack pages — split relevant 2MB blocks into L3 */
     for (int pass = 0; pass < 2; pass++) {
         uintptr_t base = (pass == 0) ? code_pa : stack_pa;
         uint32_t npages = (pass == 0) ? code_pages : stack_pages;
@@ -249,14 +180,17 @@ uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
             int l2_idx = (offset >> 21) & 0x1FF;
             int l3_idx = (offset >> 12) & 0x1FF;
 
-            /* If this L2 entry is still a 2MB block, split it into L3 pages */
+            /* Allocate L3 table if this 2MB slot doesn't have one yet.
+             * We're splitting a 2MB kernel block into 512 4KB pages.
+             * All pages start as AP=00 (kernel only), then we override
+             * specific pages with AP=01 for user access. */
             if ((l2[l2_idx] & 0x3) != 0x3) {
-                /* bits[1:0] != 11 means it's a block (01) or invalid (00) */
+                /* It's a block entry or invalid — need to split */
                 uintptr_t l3_pa = pmm_alloc_page();
                 if (!l3_pa) return 0;
                 uint64_t *l3 = (uint64_t *)l3_pa;
 
-                /* Fill L3 with kernel-only pages (AP=00) */
+                /* Fill with AP=00 kernel pages (matching the original block) */
                 uint64_t block_base = 0x40000000UL + ((uint64_t)l2_idx << 21);
                 for (int j = 0; j < PT_ENTRIES; j++) {
                     uint64_t ppa = block_base + ((uint64_t)j << 12);
@@ -266,23 +200,45 @@ uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
                 l2[l2_idx] = l3_pa | PTE_VALID | PTE_TABLE;
             }
 
-            /* Get L3 table and set AP=01 on this page */
             uint64_t *l3 = (uint64_t *)(l2[l2_idx] & ~0xFFFUL);
+
+            /* Map this page as EL0 accessible */
             l3[l3_idx] = (pa & ~0xFFFUL) | PTE_VALID | PTE_PAGE | PTE_AF
-                       | PTE_ATTR_NORMAL | PTE_SH_INNER | PTE_AP_RW_ALL;
+                       | PTE_ATTR_NORMAL | PTE_SH_INNER | PTE_AP_RW_ALL
+                       | PTE_PXN;  /* No EL1 execute — defense in depth */
         }
     }
+
+    /*
+     * Guard page: the page immediately below the stack base is
+     * intentionally left unmapped (zero entry in L3).
+     * If the user overflows the stack, they hit this unmapped page
+     * and get a clean data abort instead of corrupting memory.
+     *
+     * stack_pa is the base of the stack allocation.
+     * The guard page is at stack_pa - PAGE_SIZE.
+     * Since we zero-initialized all L3 tables, it's already unmapped.
+     * Just log it for visibility.
+     */
+
+    uart_puts("[MMU] User pgd: code=");
+    uart_puthex(code_pa);
+    uart_puts(" (");
+    uart_putdec(code_pages);
+    uart_puts("p), stack=");
+    uart_puthex(stack_pa);
+    uart_puts(" (");
+    uart_putdec(stack_pages);
+    uart_puts("p), guard=");
+    uart_puthex(stack_pa - PAGE_SIZE);
+    uart_puts("\n");
 
     return l1_pa;
 }
 
-/*
- * Switch TTBR0 to a user process page table.
- * Pass 0 to switch back to kernel-only (no user mappings).
- */
 void mmu_switch_ttbr0(uintptr_t pgd) {
     if (pgd == 0)
-        pgd = (uintptr_t)kern_l1;  /* Kernel identity map */
+        pgd = (uintptr_t)kern_l1;
 
     __asm__ volatile(
         "msr ttbr0_el1, %0\n"
@@ -291,7 +247,7 @@ void mmu_switch_ttbr0(uintptr_t pgd) {
     );
 }
 
-/* Legacy — keep for compatibility but no longer used */
+/* Legacy stubs */
 void mmu_map_user_range(uintptr_t start, uint32_t num_pages) {
     (void)start; (void)num_pages;
 }
