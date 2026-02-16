@@ -13,11 +13,15 @@
 #include "timer.h"
 #include "sched.h"
 #include "user.h"
+#include "fat16.h"
 
 static struct virtio_rng rng_dev;
 static struct virtio_blk blk_dev;
 static struct virtio_net net_dev;
 static struct virtio_gpu gpu_dev;
+
+/* Global filesystem — referenced by syscall.c */
+struct fat16_fs root_fs;
 
 static uint8_t rng_buf[64] __attribute__((aligned(64)));
 static uint8_t blk_buf[512] __attribute__((aligned(512)));
@@ -790,6 +794,84 @@ static void demo_userspace(void) {
     uart_puts("[USER] Demo complete.\n\n");
 }
 
+static void list_callback(const char *name, uint32_t size) {
+    uart_puts("  ");
+    uart_puts(name);
+    uart_puts(" (");
+    uart_putdec(size);
+    uart_puts(" bytes)\n");
+}
+
+static void demo_filesystem(void) {
+    uart_puts("--- filesystem demo (FAT16 on virtio-blk) ---\n\n");
+
+    /* Init block device */
+    if (virtio_blk_init(&blk_dev) < 0) {
+        uart_puts("SKIP: virtio-blk not available\n\n");
+        return;
+    }
+
+    /* Mount filesystem */
+    if (fat16_mount(&root_fs, &blk_dev) < 0) {
+        uart_puts("[FS] Mount failed\n\n");
+        return;
+    }
+
+    /* List files */
+    uart_puts("\n[FS] Files on disk:\n");
+    int nfiles = fat16_list_root(&root_fs, list_callback);
+    uart_puts("[FS] ");
+    uart_putdec((uint64_t)nfiles);
+    uart_puts(" file(s) found\n\n");
+
+    if (nfiles == 0) {
+        uart_puts("[FS] No files to run\n\n");
+        return;
+    }
+
+    /* Initialize scheduler and load programs from disk */
+    sched_init();
+
+    /* Try to load and run each .BIN file */
+    struct fat16_file file;
+    const char *programs[] = {"hello.bin", "fib.bin", NULL};
+
+    for (int i = 0; programs[i]; i++) {
+        if (fat16_open(&root_fs, programs[i], &file) == 0) {
+            void *code = kmalloc(file.file_size);
+            if (code) {
+                int bytes = fat16_read_file(&root_fs, &file, code, file.file_size);
+                if (bytes > 0) {
+                    uart_puts("[FS] Loaded ");
+                    uart_puts(programs[i]);
+                    uart_puts(" (");
+                    uart_putdec((uint64_t)bytes);
+                    uart_puts(" bytes)\n");
+                    sched_create_user(programs[i], code, (uint32_t)bytes);
+                }
+                kfree(code);
+            }
+        }
+    }
+
+    uart_puts("\n[FS] Running loaded programs...\n\n");
+
+    /* Run all tasks */
+    while (1) {
+        int any_alive = 0;
+        for (int i = 1; i < sched_task_count(); i++) {
+            struct task *t = sched_get_task(i);
+            if (t && t->state != TASK_FINISHED && t->state != TASK_UNUSED)
+                any_alive = 1;
+        }
+        if (!any_alive) break;
+        sched_yield();
+    }
+
+    uart_puts("\n[FS] All programs finished!\n\n");
+}
+
+
 
 
 extern uintptr_t __kernel_end;
@@ -799,11 +881,13 @@ extern uintptr_t __kernel_end;
 extern void mmu_test(int use_el0_ap);
 extern uintptr_t __kernel_end;
 
+extern uintptr_t __kernel_end;
+
 void kernel_main(void) {
     uart_init();
     uart_puts("\n==========================================\n");
 
-    /* Memory management — must come before anything that allocates */
+    /* Memory management */
     pmm_init((uintptr_t)&__kernel_end);
     mmu_init();
     kmalloc_init();
@@ -819,7 +903,15 @@ void kernel_main(void) {
     uart_puts("\n");
 
     demo_memory();
-    demo_userspace();
+    demo_filesystem();
+
+    // demo_userspace();
+    // demo_rng();
+    // demo_blk();
+    // demo_net();
+    // demo_gpu();
+    // demo_input();
+    // demo_sched();
 
     irq_disable();
 

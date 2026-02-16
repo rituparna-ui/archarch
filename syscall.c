@@ -7,6 +7,11 @@
 #include "uart.h"
 #include "sched.h"
 #include "pmm.h"
+#include "fat16.h"
+#include "kmalloc.h"
+
+/* Global filesystem — set by kernel_main after mounting */
+extern struct fat16_fs root_fs;
 
 void syscall_handler(uint64_t *regs) {
     uint64_t syscall_num = regs[8];  /* x8 = syscall number */
@@ -57,6 +62,50 @@ void syscall_handler(uint64_t *regs) {
         if (pages == 0) pages = 1;
         uintptr_t addr = pmm_alloc_pages((uint32_t)pages);
         regs[0] = addr ? addr : (uint64_t)-1;
+        break;
+    }
+
+    case SYS_EXEC: {
+        /* exec(filename_ptr, filename_len) — load and run from disk */
+        const char *name = (const char *)arg0;
+        uint32_t name_len = (uint32_t)arg1;
+
+        char fname[32];
+        if (name_len > 30) name_len = 30;
+        for (uint32_t i = 0; i < name_len; i++) fname[i] = name[i];
+        fname[name_len] = '\0';
+
+        uart_puts("[EXEC] Loading \"");
+        uart_puts(fname);
+        uart_puts("\"...\n");
+
+        struct fat16_file file;
+        if (fat16_open(&root_fs, fname, &file) < 0) {
+            uart_puts("[EXEC] File not found\n");
+            regs[0] = (uint64_t)-1;
+            break;
+        }
+
+        void *code = kmalloc(file.file_size);
+        if (!code) {
+            regs[0] = (uint64_t)-1;
+            break;
+        }
+
+        int bytes = fat16_read_file(&root_fs, &file, code, file.file_size);
+        if (bytes < 0) {
+            kfree(code);
+            regs[0] = (uint64_t)-1;
+            break;
+        }
+
+        uart_puts("[EXEC] Loaded ");
+        uart_putdec((uint64_t)bytes);
+        uart_puts(" bytes\n");
+
+        int tid = sched_create_user(fname, code, (uint32_t)bytes);
+        kfree(code);
+        regs[0] = (tid < 0) ? (uint64_t)-1 : (uint64_t)tid;
         break;
     }
 

@@ -18,6 +18,7 @@
 #define SYS_EXIT    2   /* exit(code) → does not return */
 #define SYS_YIELD   3   /* yield() → 0 */
 #define SYS_SBRK    4   /* sbrk(increment) → old break, or -1 */
+#define SYS_EXEC    5   /* exec(filename, len) → does not return on success, -1 on error */
 
 /*
  * Called from the synchronous exception vector when ESR_EL1

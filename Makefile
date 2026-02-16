@@ -7,7 +7,13 @@ OBJCOPY = $(CROSS)objcopy
 CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -march=armv8-a -mstrict-align
 LDFLAGS = -nostdlib -T linker.ld
 
-OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o virtio_blk.o virtio_net.o virtio_gpu.o virtio_input.o gic.o irq.o timer.o sched.o context_switch.o pmm.o mmu.o kmalloc.o syscall.o user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o
+OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o \
+       virtio_blk.o virtio_net.o virtio_gpu.o virtio_input.o gic.o irq.o \
+       timer.o sched.o context_switch.o pmm.o mmu.o kmalloc.o syscall.o \
+       user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o fat16.o
+
+# User programs to put on the FAT16 disk
+UPROGS = uprogs/hello.bin uprogs/fib.bin
 
 all: kernel.elf kernel.bin
 
@@ -38,11 +44,27 @@ user_prog3.o: user_prog3.S
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# Build standalone user programs as flat binaries
+uprogs/%.bin: uprogs/%.S user_link.ld
+	$(AS) -o uprogs/$*.o $<
+	$(LD) -nostdlib -T user_link.ld -o uprogs/$*.elf uprogs/$*.o
+	$(OBJCOPY) -O binary uprogs/$*.elf $@
+	@echo "  UPROG $@ ($$(stat -c%s $@) bytes)"
+
+# Create FAT16 disk image with user programs
+disk.img: $(UPROGS)
+	@echo "Creating FAT16 disk image..."
+	dd if=/dev/zero of=disk.img bs=1M count=32 2>/dev/null
+	mkfs.fat -F 16 -n VIRTDISK disk.img >/dev/null
+	for f in $(UPROGS); do mcopy -i disk.img $$f ::$$(basename $$f); done
+	@echo "Disk contents:"
+	@mdir -i disk.img :: 2>/dev/null || true
+
 clean:
-	rm -f *.o kernel.elf kernel.bin
+	rm -f *.o kernel.elf kernel.bin disk.img
+	rm -f uprogs/*.o uprogs/*.elf uprogs/*.bin
 
 run: kernel.elf disk.img
-	@echo "VNC on :5900 (password: virtio), monitor on telnet :4444"
 	qemu-system-aarch64 \
 		-machine virt,gic-version=3 \
 		-cpu max \
@@ -56,11 +78,7 @@ run: kernel.elf disk.img
 		-device virtio-gpu-pci \
 		-device virtio-keyboard-pci \
 		-device virtio-mouse-pci \
-		-vnc :0,password=on \
-		-monitor telnet:127.0.0.1:4444,server,nowait \
+		-display none \
 		-kernel kernel.elf
-
-disk.img:
-	dd if=/dev/zero of=disk.img bs=1M count=1
 
 .PHONY: all clean run
