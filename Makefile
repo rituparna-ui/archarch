@@ -4,7 +4,7 @@ AS = $(CROSS)as
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
-CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -mcpu=cortex-a53
+CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -mcpu=cortex-a53 -mstrict-align
 LDFLAGS = -nostdlib -T linker.ld
 
 OBJS = start.o main.o uart.o pci.o virtio_rng.o virtqueue.o
@@ -26,8 +26,17 @@ start.o: start.S
 clean:
 	rm -f *.o kernel.elf kernel.bin
 
-run: kernel.elf
-	qemu-system-aarch64 \
+run3: kernel.elf
+	/usr/bin/qemu-system-aarch64 \
+		-machine virt \
+		-cpu cortex-a53 \
+		-m 128M \
+		-nographic \
+		-device virtio-rng-pci \
+		-kernel kernel.elf
+
+run10: kernel.elf
+	 /home/linuxbrew/.linuxbrew/bin/qemu-system-aarch64 \
 		-machine virt \
 		-cpu cortex-a53 \
 		-m 128M \
