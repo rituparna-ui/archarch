@@ -17,6 +17,10 @@
  */
 #include "sched.h"
 #include "uart.h"
+#include "pmm.h"
+
+/* Assembly: drop_to_el0(entry, user_sp) */
+extern void drop_to_el0(uintptr_t entry, uintptr_t user_sp);
 
 /* Task table */
 static struct task tasks[SCHED_MAX_TASKS];
@@ -43,15 +47,17 @@ struct task_start_info {
 static struct task_start_info start_info[SCHED_MAX_TASKS];
 
 static void task_wrapper(void) {
-    /*
-     * If we got here via context_switch from inside an IRQ handler
-     * (sched_tick), IRQs are masked (PSTATE.I=1). We must re-enable
-     * them so the timer can preempt this task.
-     */
     __asm__ volatile("msr daifclr, #2" ::: "memory");
 
     int id = current_task;
-    start_info[id].entry(start_info[id].arg);
+    if (tasks[id].is_user) {
+        /* Drop to EL0 — this never returns normally.
+         * When the user calls SYS_EXIT, syscall_handler calls sched_exit
+         * which context_switches away. */
+        drop_to_el0(tasks[id].user_entry, tasks[id].user_sp);
+    } else {
+        start_info[id].entry(start_info[id].arg);
+    }
     sched_exit();
     for (;;) __asm__ volatile("wfe");
 }
@@ -83,6 +89,9 @@ int sched_create(const char *name, void (*entry)(void *), void *arg) {
     t->state = TASK_READY;
     t->name  = name;
     t->ticks = 0;
+    t->is_user = 0;
+    t->user_entry = 0;
+    t->user_sp = 0;
 
     start_info[id].entry = entry;
     start_info[id].arg   = arg;
@@ -112,6 +121,81 @@ int sched_create(const char *name, void (*entry)(void *), void *arg) {
 
     return id;
 }
+
+#define USER_STACK_PAGES 4
+
+int sched_create_user(const char *name, const void *code, uint32_t code_size) {
+    if (num_tasks >= SCHED_MAX_TASKS) {
+        uart_puts("[SCHED] Too many tasks!\n");
+        return -1;
+    }
+
+    /* Allocate and copy user code */
+    uint32_t code_pages = (code_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (code_pages == 0) code_pages = 1;
+    uintptr_t code_base = pmm_alloc_pages(code_pages);
+    if (!code_base) {
+        uart_puts("[SCHED] Cannot allocate user code pages\n");
+        return -1;
+    }
+    const uint8_t *src = (const uint8_t *)code;
+    uint8_t *dst = (uint8_t *)code_base;
+    for (uint32_t i = 0; i < code_size; i++)
+        dst[i] = src[i];
+    for (uint32_t i = code_size; i < code_pages * PAGE_SIZE; i++)
+        dst[i] = 0;
+
+    /* Flush caches for the copied code */
+    for (uint32_t i = 0; i < code_pages * PAGE_SIZE; i += 64)
+        __asm__ volatile("dc cvau, %0" : : "r"(code_base + i));
+    __asm__ volatile("dsb ish");
+    for (uint32_t i = 0; i < code_pages * PAGE_SIZE; i += 64)
+        __asm__ volatile("ic ivau, %0" : : "r"(code_base + i));
+    __asm__ volatile("dsb ish\n isb\n");
+
+    /* Allocate user stack */
+    uintptr_t ustack_base = pmm_alloc_pages(USER_STACK_PAGES);
+    if (!ustack_base) {
+        uart_puts("[SCHED] Cannot allocate user stack\n");
+        pmm_free_pages(code_base, code_pages);
+        return -1;
+    }
+    uintptr_t ustack_top = (ustack_base + USER_STACK_PAGES * PAGE_SIZE) & ~0xFUL;
+
+    int id = num_tasks++;
+    struct task *t = &tasks[id];
+
+    t->state = TASK_READY;
+    t->name  = name;
+    t->ticks = 0;
+    t->is_user = 1;
+    t->user_entry = code_base;
+    t->user_sp = ustack_top;
+
+    /* Kernel stack — used when this task traps to EL1 */
+    uint8_t *kstack_top = &task_stacks[id][SCHED_STACK_SIZE];
+    kstack_top = (uint8_t *)((uintptr_t)kstack_top & ~0xFUL);
+
+    t->ctx.sp  = (uint64_t)(uintptr_t)kstack_top;
+    t->ctx.x30 = (uint64_t)(uintptr_t)task_wrapper;
+    t->ctx.x29 = 0;
+    t->ctx.x19 = 0; t->ctx.x20 = 0; t->ctx.x21 = 0; t->ctx.x22 = 0;
+    t->ctx.x23 = 0; t->ctx.x24 = 0; t->ctx.x25 = 0; t->ctx.x26 = 0;
+    t->ctx.x27 = 0; t->ctx.x28 = 0;
+
+    uart_puts("[SCHED] Created user task ");
+    uart_putdec((uint64_t)id);
+    uart_puts(": \"");
+    uart_puts(name);
+    uart_puts("\" code=");
+    uart_puthex(code_base);
+    uart_puts(" ustack=");
+    uart_puthex(ustack_top);
+    uart_puts("\n");
+
+    return id;
+}
+
 
 static int pick_next(void) {
     for (int i = 1; i <= num_tasks; i++) {

@@ -13,7 +13,7 @@
 #include "types.h"
 
 #define SCHED_MAX_TASKS  8
-#define SCHED_STACK_SIZE 4096
+#define SCHED_STACK_SIZE 8192   /* 8KB — needs room for IRQ/syscall frames */
 
 /* Task states */
 #define TASK_UNUSED   0
@@ -45,6 +45,9 @@ struct task {
     int                 id;
     const char         *name;
     uint64_t            ticks;  /* number of timer ticks this task has run */
+    int                 is_user; /* 1 if this is an EL0 user task */
+    uintptr_t           user_entry;  /* EL0 entry point */
+    uintptr_t           user_sp;     /* EL0 stack pointer */
 };
 
 /*
@@ -58,6 +61,13 @@ void sched_init(void);
  * Returns the task ID, or -1 on failure.
  */
 int sched_create(const char *name, void (*entry)(void *), void *arg);
+
+/*
+ * Create a new EL0 user task.
+ * code/code_size: user program binary (will be copied to allocated pages)
+ * Returns the task ID, or -1 on failure.
+ */
+int sched_create_user(const char *name, const void *code, uint32_t code_size);
 
 /*
  * Yield the CPU to the next ready task (voluntary context switch).

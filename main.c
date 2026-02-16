@@ -751,17 +751,56 @@ static void demo_memory(void) {
 extern char user_program_start[];
 extern char user_program_end[];
 
+/* User program binaries — defined in user_prog*.S */
+extern char user_program_start[], user_program_end[];
+extern char user_program2_start[], user_program2_end[];
+extern char user_program3_start[], user_program3_end[];
+
 static void demo_userspace(void) {
-    uart_puts("--- user space demo (EL0) ---\n\n");
+    uart_puts("--- multi-process user space demo (EL0) ---\n\n");
 
-    uint32_t size = (uint32_t)(user_program_end - user_program_start);
-    uart_puts("[USER] Program size: ");
-    uart_putdec(size);
-    uart_puts(" bytes\n");
+    /* Disable MMU for EL0 access (same workaround as before) */
+    uart_puts("[USER] Disabling MMU for EL0 access...\n");
+    uint64_t sctlr;
+    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    sctlr &= ~(1UL << 0);
+    sctlr &= ~(1UL << 2);
+    sctlr &= ~(1UL << 12);
+    __asm__ volatile("msr daifset, #0xf" ::: "memory");
+    __asm__ volatile("msr sctlr_el1, %0\n isb\n" : : "r"(sctlr));
+    __asm__ volatile("msr daifclr, #2" ::: "memory");
+    uart_puts("[USER] MMU disabled\n\n");
 
-    user_exec(user_program_start, size, "hello_user");
+    /* Initialize scheduler */
+    sched_init();
 
-    uart_puts("[USER] Returned to kernel (EL1)\n");
+    /* Create 3 user tasks */
+    uint32_t s1 = (uint32_t)(user_program_end - user_program_start);
+    uint32_t s2 = (uint32_t)(user_program2_end - user_program2_start);
+    uint32_t s3 = (uint32_t)(user_program3_end - user_program3_start);
+
+    sched_create_user("hello",     user_program_start,  s1);
+    sched_create_user("fibonacci", user_program2_start, s2);
+    sched_create_user("ticker",    user_program3_start, s3);
+
+    uart_puts("\n[USER] Starting scheduler — 3 user processes\n\n");
+
+    /* Yield to start running user tasks.
+     * Task 0 (idle/kernel) yields, scheduler picks a user task,
+     * context_switch jumps to task_wrapper which erets to EL0.
+     * When all user tasks exit, scheduler returns here. */
+    while (sched_task_count() > 1) {
+        int any_alive = 0;
+        for (int i = 1; i < sched_task_count(); i++) {
+            struct task *t = sched_get_task(i);
+            if (t && t->state != TASK_FINISHED && t->state != TASK_UNUSED)
+                any_alive = 1;
+        }
+        if (!any_alive) break;
+        sched_yield();
+    }
+
+    uart_puts("\n[USER] All user tasks finished!\n");
     uart_puts("[USER] Demo complete.\n\n");
 }
 

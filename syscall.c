@@ -34,21 +34,15 @@ void syscall_handler(uint64_t *regs) {
         break;
 
     case SYS_EXIT: {
-        /* exit(code) — terminate current task, return to kernel */
-        uart_puts("[SYSCALL] exit(");
+        /* exit(code) — terminate current task and switch to next */
+        uart_puts("[SYSCALL] Task ");
+        uart_putdec((uint64_t)sched_current_id());
+        uart_puts(" exit(");
         uart_putdec(arg0);
-        uart_puts(") — returning to kernel\n");
-        /*
-         * We can't call sched_exit here because we're not using the
-         * scheduler for user tasks yet. Instead, we manipulate the
-         * saved ELR to jump to a kernel return point.
-         * For now, just loop — the eret will return to user code
-         * which will spin. The timeout will kill QEMU.
-         *
-         * A proper implementation would longjmp back to kernel_main.
-         */
-        for (;;) __asm__ volatile("wfe");
-        break;
+        uart_puts(")\n");
+        sched_exit();
+        /* sched_exit switches away and never returns here */
+        __builtin_unreachable();
     }
 
     case SYS_YIELD:
