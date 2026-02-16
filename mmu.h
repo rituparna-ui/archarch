@@ -64,4 +64,16 @@ void mmu_init(void);
  */
 void mmu_map_page(uintptr_t va, uintptr_t pa, uint64_t flags);
 
+/*
+ * Map a range of physical pages as EL0-accessible (AP=01).
+ * Splits the containing 2MB block into L3 page entries if needed.
+ * Only the specified pages get AP=01; all others stay AP=00 (EL1 only).
+ */
+void mmu_map_user_range(uintptr_t start, uint32_t num_pages);
+
+/*
+ * Map a single 4KB page as EL0-accessible.
+ */
+void mmu_map_user_page(uintptr_t pa);
+
 #endif

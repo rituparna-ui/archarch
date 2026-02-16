@@ -759,17 +759,7 @@ extern char user_program3_start[], user_program3_end[];
 static void demo_userspace(void) {
     uart_puts("--- multi-process user space demo (EL0) ---\n\n");
 
-    /* Disable MMU for EL0 access (same workaround as before) */
-    uart_puts("[USER] Disabling MMU for EL0 access...\n");
-    uint64_t sctlr;
-    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-    sctlr &= ~(1UL << 0);
-    sctlr &= ~(1UL << 2);
-    sctlr &= ~(1UL << 12);
-    __asm__ volatile("msr daifset, #0xf" ::: "memory");
-    __asm__ volatile("msr sctlr_el1, %0\n isb\n" : : "r"(sctlr));
-    __asm__ volatile("msr daifclr, #2" ::: "memory");
-    uart_puts("[USER] MMU disabled\n\n");
+    /* MMU stays ON — user pages are mapped with AP=01 per-page */
 
     /* Initialize scheduler */
     sched_init();
@@ -783,12 +773,8 @@ static void demo_userspace(void) {
     sched_create_user("fibonacci", user_program2_start, s2);
     sched_create_user("ticker",    user_program3_start, s3);
 
-    uart_puts("\n[USER] Starting scheduler — 3 user processes\n\n");
+    uart_puts("\n[USER] Starting scheduler — 3 user processes (MMU ON)\n\n");
 
-    /* Yield to start running user tasks.
-     * Task 0 (idle/kernel) yields, scheduler picks a user task,
-     * context_switch jumps to task_wrapper which erets to EL0.
-     * When all user tasks exit, scheduler returns here. */
     while (sched_task_count() > 1) {
         int any_alive = 0;
         for (int i = 1; i < sched_task_count(); i++) {
@@ -808,6 +794,9 @@ static void demo_userspace(void) {
 
 extern uintptr_t __kernel_end;
 
+extern uintptr_t __kernel_end;
+
+extern void mmu_test(int use_el0_ap);
 extern uintptr_t __kernel_end;
 
 void kernel_main(void) {
@@ -831,13 +820,6 @@ void kernel_main(void) {
 
     demo_memory();
     demo_userspace();
-
-    // demo_rng();
-    // demo_blk();
-    // demo_net();
-    // demo_gpu();
-    // demo_input();
-    // demo_sched();
 
     irq_disable();
 

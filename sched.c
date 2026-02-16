@@ -18,6 +18,7 @@
 #include "sched.h"
 #include "uart.h"
 #include "pmm.h"
+#include "mmu.h"
 
 /* Assembly: drop_to_el0(entry, user_sp) */
 extern void drop_to_el0(uintptr_t entry, uintptr_t user_sp);
@@ -161,6 +162,10 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
         return -1;
     }
     uintptr_t ustack_top = (ustack_base + USER_STACK_PAGES * PAGE_SIZE) & ~0xFUL;
+
+    /* Map user code and stack pages as EL0-accessible in the MMU */
+    mmu_map_user_range(code_base, code_pages);
+    mmu_map_user_range(ustack_base, USER_STACK_PAGES);
 
     int id = num_tasks++;
     struct task *t = &tasks[id];
