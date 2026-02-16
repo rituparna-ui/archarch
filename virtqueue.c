@@ -3,6 +3,7 @@
  * Supports multiple queue instances and multi-descriptor chains.
  */
 #include "virtqueue.h"
+#include "kva.h"
 #include "types.h"
 #include "uart.h"
 
@@ -88,7 +89,7 @@ uint16_t virtqueue_add_chain(struct virtqueue *vq,
     uint16_t head = vq->free_head;
     idx = head;
     for (int i = 0; i < count; i++) {
-        vq->desc[idx].addr  = (uint64_t)(uintptr_t)bufs[i].addr;
+        vq->desc[idx].addr  = (uint64_t)virt_to_phys((uintptr_t)bufs[i].addr);
         vq->desc[idx].len   = bufs[i].len;
         vq->desc[idx].flags = bufs[i].flags;
 

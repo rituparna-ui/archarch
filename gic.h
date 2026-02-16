@@ -2,28 +2,20 @@
 #define GIC_H
 
 #include "types.h"
+#include "kva.h"
 
 /*
  * GICv3 driver for QEMU virt machine.
  *
- * QEMU virt GICv3 memory map:
+ * QEMU virt GICv3 memory map (physical):
  *   Distributor (GICD):     0x0800_0000
  *   Redistributor (GICR):   0x080A_0000
  *
- * Interrupt ID ranges:
- *   SGI:  0-15
- *   PPI: 16-31
- *   SPI: 32-1019
- *
- * QEMU virt PCI INTx mapping:
- *   INTA -> SPI 3  (IRQ ID 35)
- *   INTB -> SPI 4  (IRQ ID 36)
- *   INTC -> SPI 5  (IRQ ID 37)
- *   INTD -> SPI 6  (IRQ ID 38)
+ * Accessed via kernel high VA.
  */
 
-#define GICD_BASE       0x08000000UL
-#define GICR_BASE       0x080A0000UL
+#define GICD_BASE       (0x08000000UL + KERN_VA_OFFSET)
+#define GICR_BASE       (0x080A0000UL + KERN_VA_OFFSET)
 
 /* SPI number to GIC IRQ ID */
 #define GIC_SPI(n)      ((n) + 32)

@@ -14,6 +14,7 @@
 #include "sched.h"
 #include "user.h"
 #include "fat16.h"
+#include "kva.h"
 
 static struct virtio_rng rng_dev;
 static struct virtio_blk blk_dev;
@@ -889,15 +890,60 @@ extern uintptr_t __kernel_end;
 
 extern uintptr_t __kernel_end;
 
+extern uintptr_t __kernel_end;
+
+static void verify_high_va(void) {
+    uart_puts("--- High VA verification ---\n");
+
+    /* Kernel code address (address of this function) */
+    uintptr_t fn_addr;
+    __asm__ volatile("adr %0, ." : "=r"(fn_addr));
+    uart_puts("  kernel_main PC:    "); uart_puthex(fn_addr); uart_puts("\n");
+
+    /* Stack pointer */
+    uintptr_t sp;
+    __asm__ volatile("mov %0, sp" : "=r"(sp));
+    uart_puts("  kernel SP:         "); uart_puthex(sp); uart_puts("\n");
+
+    /* Static data (global variable address) */
+    uart_puts("  &blk_dev (static): "); uart_puthex((uintptr_t)&blk_dev); uart_puts("\n");
+
+    /* Heap allocation */
+    void *heap_ptr = kmalloc(16);
+    uart_puts("  kmalloc(16):       "); uart_puthex((uintptr_t)heap_ptr); uart_puts("\n");
+    kfree(heap_ptr);
+
+    /* UART MMIO (check what address uart_putc writes to) */
+    uart_puts("  UART DR addr:      "); uart_puthex(0x09000000UL + KERN_VA_OFFSET); uart_puts("\n");
+
+    /* GIC MMIO */
+    uart_puts("  GICD_BASE:         "); uart_puthex(0x08000000UL + KERN_VA_OFFSET); uart_puts("\n");
+
+    /* PCI ECAM */
+    uart_puts("  PCI ECAM:          "); uart_puthex(0x4010000000UL + KERN_VA_OFFSET); uart_puts("\n");
+
+    /* Verify all are in high VA range */
+    int ok = 1;
+    if (fn_addr < KERN_VA_OFFSET) { uart_puts("  FAIL: PC not in high VA!\n"); ok = 0; }
+    if (sp < KERN_VA_OFFSET) { uart_puts("  FAIL: SP not in high VA!\n"); ok = 0; }
+    if ((uintptr_t)&blk_dev < KERN_VA_OFFSET) { uart_puts("  FAIL: static data not in high VA!\n"); ok = 0; }
+
+    uart_puts(ok ? "  All addresses in high VA range: PASS\n" : "  VERIFICATION FAILED\n");
+    uart_puts("\n");
+}
+
 void kernel_main(void) {
     uart_init();
     uart_puts("\n==========================================\n");
 
-    /* Memory management */
-    pmm_init((uintptr_t)&__kernel_end);
+    /* Memory management — kernel_end is high VA, PMM needs PA */
+    uintptr_t kernel_end_pa = virt_to_phys((uintptr_t)&__kernel_end) + 4 * PAGE_SIZE;
+    pmm_init(kernel_end_pa);
     mmu_init();
     kmalloc_init();
     uart_puts("\n");
+
+    verify_high_va();
 
     gic_init();
     irq_init();
@@ -910,14 +956,6 @@ void kernel_main(void) {
 
     demo_memory();
     demo_filesystem();
-
-    // demo_userspace();
-    // demo_rng();
-    // demo_blk();
-    // demo_net();
-    // demo_gpu();
-    // demo_input();
-    // demo_sched();
 
     irq_disable();
 

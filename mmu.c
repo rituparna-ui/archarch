@@ -1,34 +1,29 @@
 /*
- * AArch64 MMU — TTBR0/TTBR1 split with process isolation.
+ * AArch64 MMU — high VA kernel with TTBR0/TTBR1 split.
  *
- * TTBR1_EL1 (kernel): always active, maps all physical memory
- *   - MMIO, RAM, PCI — all with AP=00 (EL1 only)
- *   - Kernel code executes from here when at EL1
+ * The boot code in start.S sets up early page tables and enables the MMU.
+ * This module manages the kernel page tables (TTBR1) and creates
+ * per-process user page tables (TTBR0).
  *
- * TTBR0_EL1 (per-process): swapped on context switch
- *   - Kernel/idle task: TTBR0 = kern_l1 (full identity map, for boot code)
- *   - User tasks: TTBR0 maps ONLY that process's code + stack pages
- *     with AP=01 (EL0 accessible). Everything else is unmapped.
- *   - Guard page below stack (unmapped) catches stack overflow.
- *
- * Memory isolation:
- *   - Process A cannot see process B's memory (different TTBR0)
- *   - No process can see kernel memory via TTBR0 (not mapped)
- *   - Kernel accesses all memory via TTBR1 during syscalls/IRQs
- *
- * TCR_EL1: T0SZ=T1SZ=25 → 39-bit VA, translation starts at L1
+ * Kernel VA: 0xFFFFFF8000000000 + PA (identity offset)
+ * User VA: 0x00400000 (code), 0x007FC000 (stack)
  */
 #include "mmu.h"
 #include "pmm.h"
 #include "uart.h"
+#include "kva.h"
 
 #define PT_ENTRIES 512
 
-/* ===== Kernel page tables (TTBR1 + boot TTBR0) ===== */
-static uint64_t kern_l1[PT_ENTRIES] __attribute__((aligned(4096)));
-static uint64_t kern_l2_mmio[PT_ENTRIES] __attribute__((aligned(4096)));
-static uint64_t kern_l2_ram[PT_ENTRIES] __attribute__((aligned(4096)));
-static uint64_t kern_l2_ecam[PT_ENTRIES] __attribute__((aligned(4096)));
+/*
+ * Boot page tables — allocated at __kernel_end_phys by start.S.
+ * We compute their high VA addresses here.
+ */
+extern uintptr_t __kernel_end;  /* high VA of kernel end */
+
+/* The boot code places tables at __kernel_end_phys + 0, +4K, +8K, +12K */
+static uint64_t *get_boot_l1(void)      { return (uint64_t *)((uintptr_t)&__kernel_end); }
+static uint64_t *get_boot_l2_ram(void)  { return (uint64_t *)((uintptr_t)&__kernel_end + 2 * 4096); }
 
 static void zero_table(uint64_t *table) {
     for (int i = 0; i < PT_ENTRIES; i++)
@@ -36,143 +31,67 @@ static void zero_table(uint64_t *table) {
 }
 
 void mmu_init(void) {
-    uart_puts("[MMU] Setting up TTBR0/TTBR1 split page tables...\n");
-
-    zero_table(kern_l1);
-    zero_table(kern_l2_mmio);
-    zero_table(kern_l2_ram);
-    zero_table(kern_l2_ecam);
-
-    /* L2 for MMIO: 0x00000000-0x3FFFFFFF (device memory, 2MB blocks) */
-    for (int i = 0; i < PT_ENTRIES; i++) {
-        uint64_t pa = (uint64_t)i << 21;
-        kern_l2_mmio[i] = pa | MMU_DEVICE_FLAGS | PTE_BLOCK | PTE_VALID;
-    }
-
-    /* L2 for RAM region: PA 0x40000000-0x7FFFFFFF */
-    for (int i = 0; i < PT_ENTRIES; i++) {
-        uint64_t pa = 0x40000000UL + ((uint64_t)i << 21);
-        if (i < 64) {
-            kern_l2_ram[i] = pa | MMU_NORMAL_FLAGS | PTE_BLOCK | PTE_VALID;
-        } else {
-            kern_l2_ram[i] = pa | MMU_DEVICE_FLAGS | PTE_BLOCK | PTE_VALID;
-        }
-    }
-
-    /* L2 for PCI ECAM */
-    for (int i = 0; i < PT_ENTRIES; i++) {
-        uint64_t pa = 0x4000000000UL + ((uint64_t)i << 21);
-        kern_l2_ecam[i] = pa | MMU_DEVICE_FLAGS | PTE_BLOCK | PTE_VALID;
-    }
-
-    /* Kernel L1 */
-    kern_l1[0] = (uint64_t)kern_l2_mmio | PTE_VALID | PTE_TABLE;
-    kern_l1[1] = (uint64_t)kern_l2_ram  | PTE_VALID | PTE_TABLE;
-    for (int i = 2; i < 4; i++) {
-        uint64_t pa = (uint64_t)i << 30;
-        kern_l1[i] = pa | MMU_DEVICE_FLAGS | PTE_BLOCK | PTE_VALID;
-    }
-    kern_l1[256] = (uint64_t)kern_l2_ecam | PTE_VALID | PTE_TABLE;
-
-    uart_puts("[MMU] Kernel page tables built (TTBR1)\n");
-
-    /* TCR_EL1 */
-    uint64_t mmfr0;
-    __asm__ volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
-    uint64_t pa_range = mmfr0 & 0xF;
-
-    uint64_t tcr = (25UL << 0)     /* T0SZ = 25 */
-                 | (1UL << 8)      /* IRGN0 */
-                 | (1UL << 10)     /* ORGN0 */
-                 | (3UL << 12)     /* SH0 */
-                 | (0UL << 14)     /* TG0 = 4KB */
-                 | (25UL << 16)    /* T1SZ = 25 */
-                 | (1UL << 24)     /* IRGN1 */
-                 | (1UL << 26)     /* ORGN1 */
-                 | (3UL << 28)     /* SH1 */
-                 | (2UL << 30)     /* TG1 = 4KB */
-                 | (pa_range << 32);
-
-    uint64_t mair = (0x00UL << 0) | (0xFFUL << 8);
-
-    uart_puts("[MMU] Enabling MMU...\n");
-
-    __asm__ volatile(
-        "msr mair_el1, %0\n"
-        "msr tcr_el1, %1\n"
-        "msr ttbr0_el1, %2\n"
-        "msr ttbr1_el1, %2\n"
-        "isb\n"
-        : : "r"(mair), "r"(tcr), "r"((uint64_t)kern_l1)
-    );
-
-    uint64_t sctlr;
-    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-    sctlr |= (1UL << 0) | (1UL << 2) | (1UL << 12);
-    __asm__ volatile(
-        "msr sctlr_el1, %0\n"
-        "isb\n"
-        : : "r"(sctlr)
-    );
-
-    uart_puts("[MMU] MMU enabled! TTBR0/TTBR1 split active.\n");
+    /*
+     * MMU is already enabled by start.S boot code.
+     * TTBR0 = TTBR1 = boot_l1 (identity map for both ranges).
+     *
+     * We just log the state. The boot tables are our permanent
+     * kernel page tables (TTBR1). TTBR0 will be swapped per-process.
+     */
+    uart_puts("[MMU] High VA kernel active.\n");
+    uart_puts("[MMU] Kernel VA base: ");
+    uart_puthex(KERN_VA_OFFSET);
+    uart_puts("\n");
+    uart_puts("[MMU] TTBR1 (kernel): PA=");
+    uart_puthex(kva_to_pa(get_boot_l1()));
+    uart_puts("\n");
 }
 
 /*
- * Create an ISOLATED per-process user page table with proper VAs.
+ * Create per-process user page table (TTBR0).
  *
- * Every process gets the same virtual address layout:
- *   VA 0x00400000+  → code (mapped to code_pa)
- *   VA 0x007FC000+  → stack (mapped to stack_pa, 4 pages)
- *   VA 0x007FB000   → guard page (unmapped)
+ * Maps:
+ *   VA 0x00400000+ → code_pa (AP=01, EL0 RW)
+ *   VA 0x007FC000+ → stack_pa (AP=01, EL0 RW)
+ *   Guard page at VA 0x007FB000 (unmapped)
  *
- * Kernel RAM is identity-mapped with AP=00 (EL1 only) so the
- * kernel can execute while this TTBR0 is active.
+ * Also includes kernel identity map (AP=00) so the kernel
+ * can execute while this TTBR0 is active. The kernel runs
+ * at high VA (TTBR1), but TTBR0 must also resolve kernel
+ * addresses because the kernel is linked at high VA and
+ * TTBR1 handles those. TTBR0 only needs to handle the low
+ * VA range (user space).
+ *
+ * Actually — with the high VA kernel, TTBR0 does NOT need
+ * kernel mappings at all! The kernel runs entirely through
+ * TTBR1. TTBR0 only maps user space.
  */
 uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
                                 uintptr_t stack_pa, uint32_t stack_pages) {
+    /* Allocate L1 table (physical address) */
     uintptr_t l1_pa = pmm_alloc_page();
     if (!l1_pa) return 0;
-    uint64_t *l1 = (uint64_t *)l1_pa;
+    uint64_t *l1 = (uint64_t *)phys_to_virt(l1_pa);
     zero_table(l1);
-
-    /* Copy kernel L1 entries for EL1 access (MMIO, PCI, etc.) */
-    for (int i = 0; i < PT_ENTRIES; i++)
-        l1[i] = kern_l1[i];
-
-    /* L1[1] = kernel RAM identity map (AP=00, EL1 only) */
-    uintptr_t l2_ram_pa = pmm_alloc_page();
-    if (!l2_ram_pa) { pmm_free_page(l1_pa); return 0; }
-    uint64_t *l2_ram = (uint64_t *)l2_ram_pa;
-    for (int i = 0; i < PT_ENTRIES; i++)
-        l2_ram[i] = kern_l2_ram[i];
-    l1[1] = l2_ram_pa | PTE_VALID | PTE_TABLE;
 
     /*
      * L1[0] covers VA 0x00000000-0x3FFFFFFF.
-     * User code is at VA 0x00400000 → L1[0], L2 index 2 (0x400000 >> 21 = 2).
-     * User stack is at VA 0x007FC000 → L1[0], L2 index 3 (0x600000 >> 21 = 3).
-     * We need our own L2 table for L1[0].
+     * User code at VA 0x00400000 and stack at VA 0x007FC000 are both here.
      */
-    uintptr_t l2_user_pa = pmm_alloc_page();
-    if (!l2_user_pa) return 0;
-    uint64_t *l2_user = (uint64_t *)l2_user_pa;
-    /* Start with kernel MMIO entries so UART etc. work at EL1 */
-    for (int i = 0; i < PT_ENTRIES; i++)
-        l2_user[i] = kern_l2_mmio[i];
+    uintptr_t l2_pa = pmm_alloc_page();
+    if (!l2_pa) { pmm_free_page(l1_pa); return 0; }
+    uint64_t *l2 = (uint64_t *)phys_to_virt(l2_pa);
+    zero_table(l2);  /* All unmapped — pure user space, no kernel */
 
-    l1[0] = l2_user_pa | PTE_VALID | PTE_TABLE;
+    l1[0] = l2_pa | PTE_VALID | PTE_TABLE;
 
-    /*
-     * Map user code: VA 0x00400000+ → code_pa
-     * L2 index for 0x00400000 = (0x400000 >> 21) = 2
-     */
+    /* Map user code: VA 0x00400000+ → code_pa */
     {
         int l2_idx = (USER_VA_CODE >> 21) & 0x1FF;
 
         uintptr_t l3_pa = pmm_alloc_page();
         if (!l3_pa) return 0;
-        uint64_t *l3 = (uint64_t *)l3_pa;
+        uint64_t *l3 = (uint64_t *)phys_to_virt(l3_pa);
         zero_table(l3);
 
         for (uint32_t p = 0; p < code_pages; p++) {
@@ -182,38 +101,23 @@ uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
                        | PTE_AP_RW_ALL | PTE_PXN;
         }
 
-        l2_user[l2_idx] = l3_pa | PTE_VALID | PTE_TABLE;
+        l2[l2_idx] = l3_pa | PTE_VALID | PTE_TABLE;
     }
 
-    /*
-     * Map user stack: VA (USER_VA_STACK - stack_pages*4K) → stack_pa
-     * Stack grows down from USER_VA_STACK.
-     * Guard page is one page below the stack (unmapped).
-     *
-     * USER_VA_STACK = 0x00800000
-     * Stack pages at VA 0x007FC000..0x007FFFFF (4 pages)
-     * Guard at VA 0x007FB000 (unmapped)
-     *
-     * L2 index for 0x007FC000 = (0x600000 >> 21) = 3
-     * (0x007FC000 is in the 2MB block starting at 0x00600000)
-     * Actually: 0x007FC000 >> 21 = 3 (0x600000..0x7FFFFF)
-     */
+    /* Map user stack: VA 0x007FC000+ → stack_pa */
     {
         uintptr_t stack_va_base = USER_VA_STACK - stack_pages * PAGE_SIZE;
         int l2_idx = (stack_va_base >> 21) & 0x1FF;
 
-        /* Check if we already have an L3 for this L2 slot */
-        uintptr_t l3_pa;
         uint64_t *l3;
-        if ((l2_user[l2_idx] & 0x3) == 0x3) {
-            /* Already a table pointer (from code mapping) */
-            l3 = (uint64_t *)(l2_user[l2_idx] & ~0xFFFUL);
+        if ((l2[l2_idx] & 0x3) == 0x3) {
+            l3 = (uint64_t *)phys_to_virt(l2[l2_idx] & ~0xFFFUL);
         } else {
-            l3_pa = pmm_alloc_page();
+            uintptr_t l3_pa = pmm_alloc_page();
             if (!l3_pa) return 0;
-            l3 = (uint64_t *)l3_pa;
+            l3 = (uint64_t *)phys_to_virt(l3_pa);
             zero_table(l3);
-            l2_user[l2_idx] = l3_pa | PTE_VALID | PTE_TABLE;
+            l2[l2_idx] = l3_pa | PTE_VALID | PTE_TABLE;
         }
 
         for (uint32_t p = 0; p < stack_pages; p++) {
@@ -223,19 +127,16 @@ uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
                        | PTE_AF | PTE_ATTR_NORMAL | PTE_SH_INNER
                        | PTE_AP_RW_ALL | PTE_PXN;
         }
-        /* Guard page: l3 entry for (stack_va_base - PAGE_SIZE) stays zero (unmapped) */
     }
 
-    uart_puts("[MMU] User pgd: code VA=");
+    uart_puts("[MMU] User pgd(PA=");
+    uart_puthex(l1_pa);
+    uart_puts("): code VA=");
     uart_puthex(USER_VA_CODE);
     uart_puts("->PA=");
     uart_puthex(code_pa);
-    uart_puts(" stack VA=");
-    uart_puthex(USER_VA_STACK - stack_pages * PAGE_SIZE);
-    uart_puts("->PA=");
+    uart_puts(" stack->PA=");
     uart_puthex(stack_pa);
-    uart_puts(" guard VA=");
-    uart_puthex(USER_VA_STACK - (stack_pages + 1) * PAGE_SIZE);
     uart_puts("\n");
 
     return l1_pa;
@@ -243,12 +144,11 @@ uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
 
 void mmu_switch_ttbr0(uintptr_t pgd) {
     if (pgd == 0)
-        pgd = (uintptr_t)kern_l1;
+        pgd = kva_to_pa(get_boot_l1());  /* PA of kernel page table for idle task */
 
     __asm__ volatile(
         "msr ttbr0_el1, %0\n"
         "isb\n"
-        /* Flush TLB for TTBR0 address space */
         "tlbi aside1, xzr\n"
         "dsb sy\n"
         "isb\n"

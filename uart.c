@@ -1,10 +1,12 @@
 /*
  * PL011 UART driver for QEMU virt machine.
- * UART0 is at 0x09000000.
+ * UART0 PA is 0x09000000, accessed via kernel high VA.
  */
 #include "uart.h"
+#include "kva.h"
 
-#define UART0_BASE  0x09000000UL
+#define UART0_PA    0x09000000UL
+#define UART0_BASE  (UART0_PA + KERN_VA_OFFSET)
 #define UART_DR     (UART0_BASE + 0x00)
 #define UART_FR     (UART0_BASE + 0x18)
 #define UART_FR_TXFF (1 << 5)

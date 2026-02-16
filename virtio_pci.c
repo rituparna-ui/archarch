@@ -3,6 +3,7 @@
  * Shared by all virtio device drivers (RNG, BLK, etc).
  */
 #include "virtio_pci.h"
+#include "kva.h"
 #include "virtqueue.h"
 #include "pci.h"
 #include "uart.h"
@@ -171,9 +172,10 @@ int virtio_pci_setup_queue(struct virtio_pci_dev *vpci, struct virtqueue *vq,
 
     virtqueue_init(vq, qsize, queue_index, notify_addr);
 
-    uintptr_t desc_addr  = (uintptr_t)vq->desc;
-    uintptr_t avail_addr = (uintptr_t)vq->avail;
-    uintptr_t used_addr  = (uintptr_t)vq->used;
+    /* Device needs physical addresses for DMA */
+    uintptr_t desc_addr  = virt_to_phys((uintptr_t)vq->desc);
+    uintptr_t avail_addr = virt_to_phys((uintptr_t)vq->avail);
+    uintptr_t used_addr  = virt_to_phys((uintptr_t)vq->used);
 
     mmio_write32(common + VIRTIO_COMMON_Q_DESCLO,  (uint32_t)(desc_addr & 0xFFFFFFFF));
     mmio_write32(common + VIRTIO_COMMON_Q_DESCHI,  (uint32_t)(desc_addr >> 32));

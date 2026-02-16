@@ -20,6 +20,7 @@
 #include "pmm.h"
 #include "mmu.h"
 #include "fd.h"
+#include "kva.h"
 
 /* Assembly: drop_to_el0(entry, user_sp) */
 extern void drop_to_el0(uintptr_t entry, uintptr_t user_sp);
@@ -144,18 +145,19 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
         return -1;
     }
     const uint8_t *src = (const uint8_t *)code;
-    uint8_t *dst = (uint8_t *)code_base;
+    uint8_t *dst = (uint8_t *)phys_to_virt(code_base);
     for (uint32_t i = 0; i < code_size; i++)
         dst[i] = src[i];
     for (uint32_t i = code_size; i < code_pages * PAGE_SIZE; i++)
         dst[i] = 0;
 
-    /* Flush caches for the copied code */
+    /* Flush caches for the copied code (use VA for cache ops) */
+    uintptr_t code_va = phys_to_virt(code_base);
     for (uint32_t i = 0; i < code_pages * PAGE_SIZE; i += 64)
-        __asm__ volatile("dc cvau, %0" : : "r"(code_base + i));
+        __asm__ volatile("dc cvau, %0" : : "r"(code_va + i));
     __asm__ volatile("dsb ish");
     for (uint32_t i = 0; i < code_pages * PAGE_SIZE; i += 64)
-        __asm__ volatile("ic ivau, %0" : : "r"(code_base + i));
+        __asm__ volatile("ic ivau, %0" : : "r"(code_va + i));
     __asm__ volatile("dsb ish\n isb\n");
 
     /* Allocate user stack with guard page.

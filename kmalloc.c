@@ -8,6 +8,7 @@
 #include "kmalloc.h"
 #include "pmm.h"
 #include "uart.h"
+#include "kva.h"
 
 #define HEAP_INITIAL_PAGES  16  /* 64KB initial heap */
 #define ALIGN16(x) (((x) + 15) & ~15UL)
@@ -27,11 +28,12 @@ static size_t total_freed;
 static size_t heap_size;
 
 static void heap_grow(uint32_t pages) {
-    uintptr_t new_pages = pmm_alloc_pages(pages);
-    if (!new_pages) {
+    uintptr_t new_pages_pa = pmm_alloc_pages(pages);
+    if (!new_pages_pa) {
         uart_puts("[HEAP] ERROR: cannot grow heap\n");
         return;
     }
+    uintptr_t new_pages = phys_to_virt(new_pages_pa);
 
     size_t grow_size = pages * PAGE_SIZE;
 

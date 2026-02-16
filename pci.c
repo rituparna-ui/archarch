@@ -3,12 +3,13 @@
  * Scans bus 0 for devices, assigns BARs from a simple allocator.
  */
 #include "pci.h"
+#include "kva.h"
 #include "gic.h"
 #include "uart.h"
 
-/* Simple allocators for BAR assignment */
-static uintptr_t mmio32_alloc = PCI_MMIO32_BASE + 0x01000000UL; /* skip first 16MB used by QEMU */
-static uintptr_t pio_alloc = PCI_PIO_BASE + 0x1000UL;           /* I/O port allocator */
+/* Simple allocators for BAR assignment (physical addresses) */
+static uintptr_t mmio32_alloc = PCI_MMIO32_BASE_PA + 0x01000000UL;
+static uintptr_t pio_alloc = PCI_PIO_BASE_PA + 0x1000UL;
 
 uint32_t pci_config_read32(uint8_t bus, uint8_t dev, uint8_t func, uint16_t offset) {
     return mmio_read32(pci_ecam_addr(bus, dev, func, offset));
@@ -68,10 +69,10 @@ void pci_assign_bars(struct pci_device *dev) {
             uint32_t size = (~mask + 1) & 0xFFFF;
             uintptr_t addr = alloc_pio(size);
             /* Write the I/O base address (low bit stays 1 to indicate I/O) */
-            uint32_t pio_offset = (uint32_t)(addr - PCI_PIO_BASE);
+            uint32_t pio_offset = (uint32_t)(addr - PCI_PIO_BASE_PA);
             pci_config_write32(bus, d, func, bar_off, pio_offset | 1);
             dev->bar[i] = pio_offset | 1;
-            dev->bar_addr[i] = addr;
+            dev->bar_addr[i] = phys_to_virt(addr);
 
             uart_puts("  BAR");
             uart_putdec((uint64_t)i);
@@ -98,7 +99,7 @@ void pci_assign_bars(struct pci_device *dev) {
             pci_config_write32(bus, d, func, bar_off, (uint32_t)addr);
             pci_config_write32(bus, d, func, bar_off + 4, 0); /* upper 32 = 0 */
             dev->bar[i] = (uint32_t)addr;
-            dev->bar_addr[i] = addr;
+            dev->bar_addr[i] = phys_to_virt(addr);
             dev->bar[i + 1] = 0;
             dev->bar_addr[i + 1] = 0;
 
@@ -118,7 +119,7 @@ void pci_assign_bars(struct pci_device *dev) {
         uintptr_t addr = alloc_mmio32(size);
         pci_config_write32(bus, d, func, bar_off, (uint32_t)addr);
         dev->bar[i] = (uint32_t)addr;
-        dev->bar_addr[i] = addr;
+        dev->bar_addr[i] = phys_to_virt(addr);
 
         uart_puts("  BAR");
         uart_putdec((uint64_t)i);

@@ -2,18 +2,23 @@
 #define PCI_H
 
 #include "types.h"
+#include "kva.h"
 
 /*
- * QEMU virt machine PCI layout:
+ * QEMU virt machine PCI layout (physical addresses):
  *   ECAM base:       0x4010000000 (256 buses)
  *   PIO window:      0x3eff0000 (64K)
  *   32-bit MMIO:     0x10000000 - 0x3efeffff
  *   64-bit MMIO:     0x8000000000 - 0xffffffffff
+ *
+ * Kernel accesses these via high VA (PA + KERN_VA_OFFSET).
+ * BAR allocators work with physical addresses.
+ * bar_addr[] stores kernel VAs for driver use.
  */
-#define PCI_ECAM_BASE       0x4010000000UL
-#define PCI_MMIO32_BASE     0x10000000UL
-#define PCI_MMIO32_LIMIT    0x3EFEFFFFFUL
-#define PCI_PIO_BASE        0x3EFF0000UL
+#define PCI_ECAM_BASE       (0x4010000000UL + KERN_VA_OFFSET)
+#define PCI_MMIO32_BASE_PA  0x10000000UL
+#define PCI_MMIO32_LIMIT_PA 0x3EFEFFFFFUL
+#define PCI_PIO_BASE_PA     0x3EFF0000UL
 
 /* PCI config space offsets */
 #define PCI_VENDOR_ID       0x00
