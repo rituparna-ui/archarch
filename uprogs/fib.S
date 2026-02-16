@@ -11,7 +11,7 @@ _start:
     mov     x21, #0         /* counter */
 
 .Lloop:
-    cmp     x21, #12
+    cmp     x21, #100
     b.ge    .Ldone
 
     /* Print "fib(N) = " */

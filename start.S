@@ -191,12 +191,18 @@ vectors:
 
 /*
  * IRQ entry point.
- * Save all registers + ELR_EL1 + SPSR_EL1,
+ * Save all registers + SP_EL0 + ELR_EL1 + SPSR_EL1,
  * call C handler, restore, eret.
+ *
+ * Frame layout (288 bytes):
+ *   [sp, #0..240]   x0-x30
+ *   [sp, #248]      SP_EL0 (user stack pointer, needed for EL0 preemption)
+ *   [sp, #256]      ELR_EL1
+ *   [sp, #264]      SPSR_EL1
  */
 .section .text
 irq_entry:
-    sub     sp, sp, #272
+    sub     sp, sp, #288
 
     stp     x0,  x1,  [sp, #0]
     stp     x2,  x3,  [sp, #16]
@@ -215,15 +221,19 @@ irq_entry:
     stp     x28, x29, [sp, #224]
     str     x30,       [sp, #240]
 
+    mrs     x0, sp_el0
+    str     x0, [sp, #248]
     mrs     x0, elr_el1
     mrs     x1, spsr_el1
-    stp     x0, x1, [sp, #248]
+    stp     x0, x1, [sp, #256]
 
     bl      irq_handler
 
-    ldp     x0, x1, [sp, #248]
+    ldp     x0, x1, [sp, #256]
     msr     elr_el1, x0
     msr     spsr_el1, x1
+    ldr     x0, [sp, #248]
+    msr     sp_el0, x0
 
     ldp     x0,  x1,  [sp, #0]
     ldp     x2,  x3,  [sp, #16]
@@ -242,7 +252,7 @@ irq_entry:
     ldp     x28, x29, [sp, #224]
     ldr     x30,       [sp, #240]
 
-    add     sp, sp, #272
+    add     sp, sp, #288
     eret
 
 unhandled_exception:

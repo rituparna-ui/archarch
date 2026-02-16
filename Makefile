@@ -13,7 +13,7 @@ OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o \
        user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o fat16.o
 
 # User programs to put on the FAT16 disk
-UPROGS = uprogs/hello.bin uprogs/fib.bin
+UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin
 
 all: kernel.elf kernel.bin
 

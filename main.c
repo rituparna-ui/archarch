@@ -803,7 +803,7 @@ static void list_callback(const char *name, uint32_t size) {
 }
 
 static void demo_filesystem(void) {
-    uart_puts("--- filesystem demo (FAT16 on virtio-blk) ---\n\n");
+    uart_puts("--- filesystem + preemptive scheduling demo ---\n\n");
 
     /* Init block device */
     if (virtio_blk_init(&blk_dev) < 0) {
@@ -829,12 +829,17 @@ static void demo_filesystem(void) {
         return;
     }
 
+    /* Start preemptive timer — 50ms time slice */
+    timer_init(1000);
+    irq_register_timer();
+    uart_puts("\n");
+
     /* Initialize scheduler and load programs from disk */
     sched_init();
 
-    /* Try to load and run each .BIN file */
+    /* Load all .bin programs found on disk */
     struct fat16_file file;
-    const char *programs[] = {"hello.bin", "fib.bin", NULL};
+    const char *programs[] = {"hello.bin", "fib.bin", "spin.bin", NULL};
 
     for (int i = 0; programs[i]; i++) {
         if (fat16_open(&root_fs, programs[i], &file) == 0) {
@@ -854,9 +859,9 @@ static void demo_filesystem(void) {
         }
     }
 
-    uart_puts("\n[FS] Running loaded programs...\n\n");
+    uart_puts("\n[FS] Running programs with preemptive scheduling (50ms slice)...\n\n");
 
-    /* Run all tasks */
+    /* Run all tasks — timer preemption handles switching */
     while (1) {
         int any_alive = 0;
         for (int i = 1; i < sched_task_count(); i++) {
@@ -868,7 +873,24 @@ static void demo_filesystem(void) {
         sched_yield();
     }
 
-    uart_puts("\n[FS] All programs finished!\n\n");
+    /* Stop timer */
+    timer_disable();
+
+    /* Print task stats */
+    uart_puts("\n[FS] All programs finished! Task stats:\n");
+    for (int i = 1; i < sched_task_count(); i++) {
+        struct task *t = sched_get_task(i);
+        if (t) {
+            uart_puts("  Task ");
+            uart_putdec((uint64_t)i);
+            uart_puts(" (\"");
+            uart_puts(t->name);
+            uart_puts("\"): ");
+            uart_putdec(t->ticks);
+            uart_puts(" timer ticks\n");
+        }
+    }
+    uart_puts("\n");
 }
 
 
