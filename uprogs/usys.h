@@ -94,6 +94,22 @@ static inline int64_t dup2(int oldfd, int newfd) {
     return _syscall2(13, (uint64_t)oldfd, (uint64_t)newfd);
 }
 
+static inline int64_t kill(int pid, int sig) {
+    return _syscall2(14, (uint64_t)pid, (uint64_t)sig);
+}
+
+static inline int64_t signal(int sig, uint64_t handler) {
+    return _syscall2(15, (uint64_t)sig, handler);
+}
+
+/* Signal numbers */
+#define SIGKILL  9
+#define SIGUSR1 10
+#define SIGSEGV 11
+#define SIGCHLD 17
+#define SIG_DFL  0
+#define SIG_IGN  1
+
 static inline int64_t listdir(char *buf, uint64_t buflen) {
     return _syscall2(10, (uint64_t)buf, buflen);
 }

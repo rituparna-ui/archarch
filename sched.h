@@ -12,6 +12,7 @@
 
 #include "types.h"
 #include "fd.h"
+#include "signal.h"
 
 #define SCHED_MAX_TASKS  8
 #define SCHED_STACK_SIZE 8192   /* 8KB — needs room for IRQ/syscall frames */
@@ -54,7 +55,9 @@ struct task {
     uint32_t            code_pages;  /* Number of code pages */
     uintptr_t           stack_pa;    /* Physical address of user stack pages */
     int                 wait_for_tid; /* tid this task is waiting on (-1 = none) */
+    int                 parent_tid;   /* parent task id (-1 = none) */
     struct fd_table     fdt;          /* per-process file descriptor table */
+    struct signal_state sig;          /* per-process signal state */
 };
 
 /*

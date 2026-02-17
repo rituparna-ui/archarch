@@ -27,6 +27,9 @@
 #define SYS_FORK    11  /* fork() → child pid in parent, 0 in child */
 #define SYS_PIPE    12  /* pipe(fds_ptr) → 0, writes [read_fd, write_fd] */
 #define SYS_DUP2    13  /* dup2(oldfd, newfd) → newfd */
+#define SYS_KILL    14  /* kill(pid, sig) → 0 */
+#define SYS_SIGNAL  15  /* signal(sig, handler) → old handler */
+#define SYS_SIGRET  16  /* sigreturn() — restore state after signal handler */
 
 void syscall_handler(uint64_t *regs);
 

@@ -9,6 +9,7 @@
 #include "kmalloc.h"
 #include "virtio_blk.h"
 #include "fd.h"
+#include "signal.h"
 
 extern struct fat16_fs root_fs;
 
@@ -168,6 +169,21 @@ done:   buf[pos] = '\0';
         break;
     }
 
+    case SYS_KILL: {
+        regs[0] = (uint64_t)signal_send((int)arg0, (int)arg1);
+        break;
+    }
+
+    case SYS_SIGNAL: {
+        regs[0] = signal_set_handler((int)arg0, arg1);
+        break;
+    }
+
+    case SYS_SIGRET: {
+        signal_return(regs);
+        break;
+    }
+
     default:
         uart_puts("[SYSCALL] Unknown #");
         uart_putdec(num);
@@ -175,4 +191,7 @@ done:   buf[pos] = '\0';
         regs[0] = (uint64_t)-1;
         break;
     }
+
+    /* Check for pending signals before returning to EL0 */
+    signal_deliver(regs);
 }

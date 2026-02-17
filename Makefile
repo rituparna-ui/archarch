@@ -10,10 +10,11 @@ LDFLAGS = -nostdlib -T linker.ld
 OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o \
        virtio_blk.o virtio_net.o virtio_gpu.o virtio_input.o gic.o irq.o \
        timer.o sched.o context_switch.o pmm.o mmu.o kmalloc.o syscall.o \
-       user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o fat16.o fd.o
+       user.o el0_entry.o user_prog.o user_prog2.o user_prog3.o fat16.o fd.o \
+       signal.o
 
 # User programs to put on the FAT16 disk
-UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin uprogs/shell.bin uprogs/badmem.bin uprogs/stksmash.bin uprogs/forktest.bin uprogs/pipetest.bin
+UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin uprogs/shell.bin uprogs/badmem.bin uprogs/stksmash.bin uprogs/forktest.bin uprogs/pipetest.bin uprogs/sigtest.bin
 
 # User program C flags
 UCFLAGS = -ffreestanding -nostdlib -nostartfiles -O2 -march=armv8-a -mstrict-align -I uprogs
@@ -74,6 +75,13 @@ uprogs/pipetest.bin: uprogs/pipetest.c uprogs/crt0.S uprogs/usys.h user_link.ld
 	$(CC) $(UCFLAGS) -c -o uprogs/pipetest.o uprogs/pipetest.c
 	$(LD) -nostdlib -T user_link.ld -o uprogs/pipetest.elf uprogs/crt0.o uprogs/pipetest.o
 	$(OBJCOPY) -O binary uprogs/pipetest.elf $@
+	@echo "  UPROG $@ ($$(stat -c%s $@) bytes)"
+
+uprogs/sigtest.bin: uprogs/sigtest.c uprogs/crt0.S uprogs/usys.h user_link.ld
+	$(AS) -o uprogs/crt0.o uprogs/crt0.S
+	$(CC) $(UCFLAGS) -c -o uprogs/sigtest.o uprogs/sigtest.c
+	$(LD) -nostdlib -T user_link.ld -o uprogs/sigtest.elf uprogs/crt0.o uprogs/sigtest.o
+	$(OBJCOPY) -O binary uprogs/sigtest.elf $@
 	@echo "  UPROG $@ ($$(stat -c%s $@) bytes)"
 
 # Create FAT16 disk image with user programs

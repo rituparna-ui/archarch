@@ -101,6 +101,7 @@ int sched_create(const char *name, void (*entry)(void *), void *arg) {
     t->code_pages = 0;
     t->stack_pa = 0;
     t->wait_for_tid = -1;
+    t->parent_tid = -1;
 
     start_info[id].entry = entry;
     start_info[id].arg   = arg;
@@ -204,7 +205,9 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
     t->code_pages = code_pages;
     t->stack_pa = ustack_base;
     t->wait_for_tid = -1;
+    t->parent_tid = -1;  /* No parent for exec'd tasks */
     fd_table_init(&t->fdt);
+    signal_init(&t->sig);
 
     /* Kernel stack — used when this task traps to EL1 */
     uint8_t *kstack_top = &task_stacks[id][SCHED_STACK_SIZE];
@@ -313,6 +316,10 @@ void sched_exit(void) {
 
     /* Close all open file descriptors */
     fd_table_destroy(&tasks[me].fdt);
+
+    /* Send SIGCHLD to parent */
+    if (tasks[me].parent_tid >= 0)
+        signal_send(tasks[me].parent_tid, SIGCHLD);
 
     /* Wake any task that was waiting on us */
     for (int i = 0; i < num_tasks; i++) {
@@ -432,9 +439,15 @@ int sched_fork(uint64_t *parent_regs) {
     child->code_pages = cpages;
     child->stack_pa = child_stack;
     child->wait_for_tid = -1;
+    child->parent_tid = current_task;
 
     /* Duplicate file descriptor table */
     fd_table_dup(&child->fdt, &parent->fdt);
+
+    /* Copy signal handlers from parent */
+    for (int i = 0; i < NSIG; i++)
+        child->sig.handlers[i] = parent->sig.handlers[i];
+    child->sig.pending = 0;  /* Child starts with no pending signals */
 
     /*
      * 5. Build the child's kernel stack so it returns from the syscall.

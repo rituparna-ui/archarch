@@ -19,6 +19,7 @@
 #include "pci.h"
 #include "timer.h"
 #include "sched.h"
+#include "signal.h"
 #include "uart.h"
 
 /* Interrupt pending flags — set by ISR, cleared by main loop */
@@ -208,6 +209,14 @@ void unhandled_sync_el0(void) {
     uart_puthex(far);
     uart_puts("\n");
 
-    /* Kill the faulting task */
+    /* Send SIGSEGV to the faulting task — if it has a handler, it'll run */
+    struct task *t = sched_get_task(sched_current_id());
+    if (t && t->sig.handlers[SIGSEGV] > SIG_IGN) {
+        /* User has a SIGSEGV handler — deliver it */
+        signal_send(sched_current_id(), SIGSEGV);
+        return;  /* Will be delivered on return to EL0 */
+    }
+
+    /* No handler — kill the task (default action) */
     sched_exit();
 }
