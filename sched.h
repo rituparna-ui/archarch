@@ -54,6 +54,7 @@ struct task {
     uintptr_t           code_pa;     /* Physical address of user code pages */
     uint32_t            code_pages;  /* Number of code pages */
     uintptr_t           stack_pa;    /* Physical address of user stack pages */
+    uintptr_t           heap_break;  /* Current user heap break VA */
     int                 wait_for_tid; /* tid this task is waiting on (-1 = none) */
     int                 parent_tid;   /* parent task id (-1 = none) */
     struct fd_table     fdt;          /* per-process file descriptor table */

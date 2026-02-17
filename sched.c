@@ -100,6 +100,7 @@ int sched_create(const char *name, void (*entry)(void *), void *arg) {
     t->code_pa = 0;
     t->code_pages = 0;
     t->stack_pa = 0;
+    t->heap_break = 0;
     t->wait_for_tid = -1;
     t->parent_tid = -1;
 
@@ -204,6 +205,7 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
     t->code_pa = code_base;
     t->code_pages = code_pages;
     t->stack_pa = ustack_base;
+    t->heap_break = USER_VA_CODE + code_pages * PAGE_SIZE;
     t->wait_for_tid = -1;
     t->parent_tid = -1;  /* No parent for exec'd tasks */
     fd_table_init(&t->fdt);
@@ -438,6 +440,7 @@ int sched_fork(uint64_t *parent_regs) {
     child->code_pa = child_code;
     child->code_pages = cpages;
     child->stack_pa = child_stack;
+    child->heap_break = parent->heap_break;
     child->wait_for_tid = -1;
     child->parent_tid = current_task;
 

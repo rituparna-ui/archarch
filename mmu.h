@@ -79,6 +79,15 @@ uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
                                 uintptr_t stack_pa, uint32_t stack_pages);
 
 /*
+ * Map a single 4KB page into an existing user page table (TTBR0).
+ * pgd: physical address of the L1 table.
+ * va: user virtual address (must be page-aligned, in low VA range).
+ * pa: physical address to map (must be page-aligned).
+ * Returns 0 on success, -1 on failure.
+ */
+int mmu_map_user_page_in_pgd(uintptr_t pgd, uintptr_t va, uintptr_t pa);
+
+/*
  * Switch TTBR0 to a user process page table.
  * Pass 0 to switch back to kernel-only context.
  */

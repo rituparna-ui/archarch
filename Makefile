@@ -14,7 +14,7 @@ OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o \
        signal.o
 
 # User programs to put on the FAT16 disk
-UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin uprogs/shell.bin uprogs/badmem.bin uprogs/stksmash.bin uprogs/forktest.bin uprogs/pipetest.bin uprogs/sigtest.bin
+UPROGS = uprogs/hello.bin uprogs/fib.bin uprogs/spin.bin uprogs/shell.bin uprogs/badmem.bin uprogs/stksmash.bin uprogs/forktest.bin uprogs/pipetest.bin uprogs/sigtest.bin uprogs/sbrktest.bin
 
 # User program C flags
 UCFLAGS = -ffreestanding -nostdlib -nostartfiles -O2 -march=armv8-a -mstrict-align -I uprogs
@@ -116,3 +116,11 @@ run: kernel.elf disk.img
 		-kernel kernel.elf
 
 .PHONY: all clean run
+
+uprogs/sbrktest.bin: uprogs/sbrktest.c uprogs/crt0.S uprogs/usys.h user_link.ld
+	$(AS) -o uprogs/crt0.o uprogs/crt0.S
+	$(CC) $(UCFLAGS) -c -o uprogs/sbrktest.o uprogs/sbrktest.c
+	$(LD) -nostdlib -T user_link.ld -o uprogs/sbrktest.elf uprogs/crt0.o uprogs/sbrktest.o
+	$(OBJCOPY) -O binary uprogs/sbrktest.elf $@
+	@echo "  UPROG $@ ($(stat -c%s $@) bytes)"
+

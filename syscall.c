@@ -10,6 +10,8 @@
 #include "virtio_blk.h"
 #include "fd.h"
 #include "signal.h"
+#include "mmu.h"
+#include "kva.h"
 
 extern struct fat16_fs root_fs;
 
@@ -109,10 +111,55 @@ void syscall_handler(uint64_t *regs) {
         break;
 
     case SYS_SBRK: {
-        uint64_t pages = (arg0 + PAGE_SIZE - 1) / PAGE_SIZE;
-        if (pages == 0) pages = 1;
-        uintptr_t addr = pmm_alloc_pages((uint32_t)pages);
-        regs[0] = addr ? addr : (uint64_t)-1;
+        struct task *t = sched_get_task(sched_current_id());
+        if (!t || !t->is_user) { regs[0] = (uint64_t)-1; break; }
+
+        uint64_t increment = arg0;
+        if (increment == 0) {
+            /* Return current break */
+            regs[0] = t->heap_break;
+            break;
+        }
+
+        uintptr_t old_break = t->heap_break;
+        uintptr_t new_break = old_break + increment;
+
+        /* Sanity: don't let heap collide with stack guard region */
+        if (new_break >= USER_VA_GUARD) {
+            regs[0] = (uint64_t)-1;
+            break;
+        }
+
+        /* Allocate and map pages for the range [old_break, new_break) */
+        uintptr_t page_end   = PAGE_ALIGN_UP(new_break);
+
+        /* If old_break was already page-aligned, first new page is at old_break.
+         * Otherwise, the partial page at old_break is already mapped. */
+        uintptr_t map_from = PAGE_ALIGN_UP(old_break);
+
+        int failed = 0;
+        for (uintptr_t va = map_from; va < page_end; va += PAGE_SIZE) {
+            uintptr_t pa = pmm_alloc_page();
+            if (!pa) { failed = 1; break; }
+
+            /* Zero the page */
+            uint8_t *p = (uint8_t *)phys_to_virt(pa);
+            for (int i = 0; i < PAGE_SIZE; i++) p[i] = 0;
+
+            if (mmu_map_user_page_in_pgd(t->ttbr0, va, pa) < 0) {
+                pmm_free_page(pa);
+                failed = 1;
+                break;
+            }
+        }
+
+        if (failed) {
+            regs[0] = (uint64_t)-1;
+            break;
+        }
+
+        t->heap_break = new_break;
+        regs[0] = old_break;
         break;
     }
 

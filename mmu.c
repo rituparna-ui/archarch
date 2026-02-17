@@ -142,6 +142,56 @@ uintptr_t mmu_create_user_pgd(uintptr_t code_pa, uint32_t code_pages,
     return l1_pa;
 }
 
+/*
+ * Map a single 4KB page into an existing user page table.
+ * Walks L1 → L2 → L3, allocating intermediate tables as needed.
+ */
+int mmu_map_user_page_in_pgd(uintptr_t pgd, uintptr_t va, uintptr_t pa) {
+    uint64_t *l1 = (uint64_t *)phys_to_virt(pgd);
+
+    int l1_idx = (va >> 30) & 0x1FF;
+    uint64_t *l2;
+
+    if ((l1[l1_idx] & 0x3) == 0x3) {
+        l2 = (uint64_t *)phys_to_virt(l1[l1_idx] & ~0xFFFUL);
+    } else {
+        uintptr_t l2_pa = pmm_alloc_page();
+        if (!l2_pa) return -1;
+        l2 = (uint64_t *)phys_to_virt(l2_pa);
+        zero_table(l2);
+        l1[l1_idx] = l2_pa | PTE_VALID | PTE_TABLE;
+    }
+
+    int l2_idx = (va >> 21) & 0x1FF;
+    uint64_t *l3;
+
+    if ((l2[l2_idx] & 0x3) == 0x3) {
+        l3 = (uint64_t *)phys_to_virt(l2[l2_idx] & ~0xFFFUL);
+    } else {
+        uintptr_t l3_pa = pmm_alloc_page();
+        if (!l3_pa) return -1;
+        l3 = (uint64_t *)phys_to_virt(l3_pa);
+        zero_table(l3);
+        l2[l2_idx] = l3_pa | PTE_VALID | PTE_TABLE;
+    }
+
+    int l3_idx = (va >> 12) & 0x1FF;
+    l3[l3_idx] = pa | PTE_VALID | PTE_PAGE
+               | PTE_AF | PTE_ATTR_NORMAL | PTE_SH_INNER
+               | PTE_AP_RW_ALL | PTE_PXN;
+
+    /* Invalidate TLB for this VA */
+    __asm__ volatile(
+        "dsb ishst\n"
+        "tlbi vale1is, %0\n"
+        "dsb ish\n"
+        "isb\n"
+        : : "r"(va >> 12)
+    );
+
+    return 0;
+}
+
 void mmu_switch_ttbr0(uintptr_t pgd) {
     if (pgd == 0)
         pgd = kva_to_pa(get_boot_l1());  /* PA of kernel page table for idle task */
