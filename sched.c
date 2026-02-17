@@ -139,9 +139,13 @@ int sched_create_user(const char *name, const void *code, uint32_t code_size) {
         return -1;
     }
 
-    /* Allocate and copy user code */
+    /* Allocate pages for user code + BSS.
+     * The flat binary contains .text + .rodata + .data.
+     * BSS follows and can be larger. Allocate extra pages for it. */
     uint32_t code_pages = (code_size + PAGE_SIZE - 1) / PAGE_SIZE;
     if (code_pages == 0) code_pages = 1;
+    /* Add 4 extra pages for BSS (16KB should be enough for most programs) */
+    code_pages += 4;
     uintptr_t code_base = pmm_alloc_pages(code_pages);
     if (!code_base) {
         uart_puts("[SCHED] Cannot allocate user code pages\n");

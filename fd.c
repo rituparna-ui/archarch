@@ -47,12 +47,8 @@ void fd_table_init(struct fd_table *fdt) {
 
 void fd_table_destroy(struct fd_table *fdt) {
     for (int i = 0; i < MAX_FDS_PER_TASK; i++) {
-        if (fdt->fds[i]) {
-            fdt->fds[i]->ref_count--;
-            if (fdt->fds[i]->ref_count <= 0 && fdt->fds[i] != &console_file)
-                free_file(fdt->fds[i]);
-            fdt->fds[i] = NULL;
-        }
+        if (fdt->fds[i])
+            fd_close(fdt, i);
     }
 }
 
@@ -93,25 +89,26 @@ int fd_close(struct fd_table *fdt, int fd) {
         return -1;
 
     struct open_file *f = fdt->fds[fd];
+    fdt->fds[fd] = NULL;
 
-    /* Track pipe end closure — only when last reference closes */
-    if (f->type == FD_TYPE_PIPE && f->pipe && f->ref_count <= 1) {
+    f->ref_count--;
+
+    /* Track pipe end closure when last reference is gone */
+    if (f->type == FD_TYPE_PIPE && f->pipe && f->ref_count <= 0) {
         if (f->flags == O_RDONLY)
             f->pipe->read_open = 0;
         else if (f->flags == O_WRONLY)
             f->pipe->write_open = 0;
 
-        /* Free pipe when both ends are closed */
         if (!f->pipe->read_open && !f->pipe->write_open) {
             kfree(f->pipe);
             f->pipe = NULL;
         }
     }
 
-    f->ref_count--;
     if (f->ref_count <= 0 && f != &console_file)
         free_file(f);
-    fdt->fds[fd] = NULL;
+
     return 0;
 }
 
