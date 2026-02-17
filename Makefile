@@ -4,7 +4,7 @@ AS = $(CROSS)as
 LD = $(CROSS)ld
 OBJCOPY = $(CROSS)objcopy
 
-CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O2 -march=armv8-a -mstrict-align
+CFLAGS = -ffreestanding -nostdlib -nostartfiles -Wall -Wextra -O0 -march=armv8-a -mstrict-align
 LDFLAGS = -nostdlib -T linker.ld
 
 OBJS = start.o main.o uart.o pci.o virtio_pci.o virtqueue.o virtio_rng.o \
